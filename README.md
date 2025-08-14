@@ -2,12 +2,13 @@
 
 A simple comparison of GPT-5, Claude Opus 4.1, and Gemini 2.5 Pro on a complex WebGL raytracing challenge.
 Demo site [https://benhaotang.github.io/raytracing-llm-bench/](https://benhaotang.github.io/raytracing-llm-bench/)
+The homepage and this README is mainly written by claude code, the scoring and description.md is written by a biased human like me.
 
 ## Results
 
 - **Gemini 2.5 Pro**: 93/120 (Best score, $1.31)
 - **GPT-5**: 86/120 (Most sophisticated, $3.12)
-- **Claude Opus 4.1**: 80/120 (Most expensive, $34.86)
+- **Claude Opus 4.1**: 80/120 (Most expensive, but the only one that 1-shot with a working renderer, $34.86)
 
 ## Test Details
 
