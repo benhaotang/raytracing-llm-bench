@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGL Raytracing simulation LLM Comparison</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f5f5f5;
+            height: 100vh;
+            display: flex;
+            overflow: hidden;
+        }
+
+        .sidebar {
+            width: 350px;
+            background: #2c3e50;
+            color: white;
+            padding: 0;
+            box-shadow: 2px 0 5px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease, width 0.3s ease;
+            overflow-y: auto;
+            position: relative;
+            z-index: 1000;
+        }
+
+        .sidebar-header {
+            display: flex;
+            align-items: center;
+            padding: 20px;
+            border-bottom: 1px solid #34495e;
+        }
+
+        .sidebar.collapsed {
+            transform: translateX(-300px);
+            width: 50px;
+        }
+
+        .sidebar.collapsed .sidebar-content {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .toggle-btn {
+            position: absolute;
+            top: 20px;
+            right: 15px;
+            background: #3498db;
+            border: none;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+            z-index: 10;
+            padding: 8px 12px;
+            border-radius: 4px;
+            transition: all 0.3s ease;
+        }
+
+        .sidebar.collapsed .toggle-btn {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .toggle-btn:hover {
+            background: #2980b9;
+        }
+
+        .collapsed-handle {
+            position: fixed;
+            top: 50%;
+            left: 0;
+            transform: translateY(-50%);
+            background: #f87fd1;
+            border: none;
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+            cursor: pointer;
+            z-index: 9999;
+            padding: 20px 12px;
+            border-radius: 0 12px 12px 0;
+            box-shadow: 3px 0 10px rgba(0,0,0,0.3);
+            opacity: 0;
+            pointer-events: none;
+            transition: all 0.3s ease;
+            width: 50px;
+            height: 80px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .collapsed-handle.show {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .collapsed-handle:hover {
+            background: #bd28d1;
+            transform: translateY(-50%) translateX(10px);
+        }
+
+        .sidebar-content {
+            opacity: 1;
+            transition: opacity 0.3s ease;
+            padding: 20px;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #ecf0f1;
+        }
+
+        .model-selector {
+            margin-bottom: 30px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #bdc3c7;
+        }
+
+        select {
+            width: 100%;
+            padding: 10px;
+            border: none;
+            border-radius: 5px;
+            background: #34495e;
+            color: white;
+            font-size: 16px;
+        }
+
+        .model-info {
+            background: #34495e;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .model-name {
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #3498db;
+        }
+
+        .model-description {
+            line-height: 1.6;
+            color: #ecf0f1;
+            font-size: 12px;
+            white-space: pre-line;
+        }
+
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .iframe-container {
+            flex: 1;
+            padding: 20px;
+        }
+
+        iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            background: white;
+        }
+
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            font-size: 18px;
+            color: #7f8c8d;
+        }
+
+        .challenge-info {
+            margin-top: 20px;
+        }
+
+        .challenge-overview {
+            color: #bdc3c7;
+            line-height: 1.6;
+        }
+
+        .challenge-summary {
+            display: block;
+        }
+
+        .challenge-details {
+            display: none;
+            margin-top: 15px;
+            background: #2c3e50;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 3px solid #3498db;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            line-height: 1.4;
+            max-height: 300px;
+            overflow-y: auto;
+            white-space: pre-line;
+        }
+
+        .read-more-btn, .copy-btn {
+            background: #3498db;
+            border: none;
+            color: white;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            margin: 10px 5px 0 0;
+            transition: background 0.3s ease;
+        }
+
+        .read-more-btn:hover, .copy-btn:hover {
+            background: #2980b9;
+        }
+
+        .copy-btn {
+            background: #27ae60;
+        }
+
+        .copy-btn:hover {
+            background: #229954;
+        }
+
+        .copy-btn.copied {
+            background: #e74c3c;
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 300px;
+                position: fixed;
+                height: 100vh;
+                left: 0;
+                top: 0;
+                z-index: 1000;
+            }
+            
+            .sidebar.collapsed {
+                transform: translateX(-250px);
+                width: 50px;
+            }
+            
+            
+            .main-content {
+                width: 100%;
+                margin-left: 0;
+            }
+            
+            body {
+                flex-direction: row;
+            }
+        }
+    </style>
+</head>
+<body>
+    <button class="collapsed-handle" id="collapsed-handle" onclick="toggleSidebar()">›</button>
+    <div class="sidebar" id="sidebar">
+        <button class="toggle-btn" onclick="toggleSidebar()">☰</button>
+        <div class="sidebar-content">
+            <h1>WebGL Raytracing LLM Comparison</h1>
+            
+            <div class="model-selector">
+                <label for="model-select">Select Model:</label>
+                <select id="model-select" onchange="loadModel()">
+                    <option value="">Choose a model...</option>
+                    <option value="chatgpt">GPT-5 High</option>
+                    <option value="claude">Claude Opus 4.1(32K reasoning)</option>
+                    <option value="gemini">Gemini 2.5 Pro(32K reasoning)</option>
+                </select>
+                <div style="margin-top: 8px; padding: 8px; background: rgba(241, 196, 15, 0.1); border-left: 3px solid #f1c40f; border-radius: 3px;">
+                    <p style="color: #f39c12; font-size: 11px; line-height: 1.4; margin: 0;">
+                        ⚠️ <strong>Tip:</strong> Toggle off depth of field or lower rendering quality if everything is very blurry in preview. This is due to insufficient light simulation.
+                    </p>
+                </div>
+            </div>
+
+            <div class="model-info" id="model-info" style="display: none;">
+                <div class="model-name" id="model-name"></div>
+                <div class="model-description" id="model-description"></div>
+            </div>
+
+            <div class="challenge-info">
+                <h3 style="color: #3498db; margin-bottom: 10px;">Challenge Overview</h3>
+                <div class="challenge-overview">
+                    <div class="challenge-summary">
+                        <p>Each model was given the same complex WebGL raytracing prompt requiring:</p>
+                        <ul style="margin: 10px 0; padding-left: 20px;">
+                            <li>Scene composition (55 points)</li>
+                            <li>Rendering techniques (65+ points)</li>
+                            <li>Performance optimization</li>
+                            <li>Interactive controls</li>
+                        </ul>
+                        <p>Compare how each AI model approached this challenging 3D rendering task.</p>
+                    </div>
+                    <div class="challenge-details" id="challenge-details"></div>
+                    <button class="read-more-btn" onclick="toggleDetails()">Read Full Prompt</button>
+                    <button class="copy-btn" onclick="copyPrompt()" id="copy-btn">Copy Prompt</button>
+                    
+                    <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #34495e;">
+                        <p style="color: #95a5a6; font-size: 14px; line-height: 1.5;">
+                            <strong>Optional Bonus Task:</strong><br>
+                            Add a new feature of freezing in time to render one frame with best possible quality.
+                        </p>
+                        
+                        <div style="margin-top: 15px; padding: 12px; background: rgba(52, 73, 94, 0.3); border-radius: 5px; border: 1px solid #34495e;">
+                            <p style="color: #bdc3c7; font-size: 12px; line-height: 1.4;">
+                                <strong>Setup Details:</strong><br>
+                                Only using API with default temperature, no agentic coding setups. This is just a simple test for LLM's physical space understanding and simulation coding ability without an agentic environment.<br><br>
+                                
+                                <strong>API Costs (paid by myself😭):</strong><br>
+                                • GPT-5: $3.12<br>
+                                • Claude Opus 4.1: $34.86<br>
+                                • Gemini 2.5 Pro: $1.31<br><br>
+                                
+                                ⚠️ This test is by no means scientific or rigorous, just take as a vibe test.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="iframe-container">
+            <div class="loading" id="loading">Select a model from the sidebar to view the raytracing demo</div>
+            <iframe id="demo-frame" style="display: none;"></iframe>
+        </div>
+    </div>
+
+    <script>
+        const modelInfo = {
+            chatgpt: {
+                name: "GPT-5",
+                description: "Ray Tracing Scene Score: 86/120\n\nDevelopment: 5 shots to see anything (fixing WebGL errors), another 4 shots to add the freeze in time function.\n\nPros:\n• Most sophisticated geometry, good wood details\n• Good control panel with fine adjustments\n• No need human intervention, just provide error and problem it will come to a solution\n\nCons:\n• Worst performance\n• Visual tearing and artifacts\n• Somehow it always start up-side-down (fixed this 3 shots but failed, in the end just ask it to add a flip button)\n\nScene Composition (26/55):\n• Wood table: 5/5 ✅\n• Stained glass window: 5/5 ✅\n• Ambient lighting: 5/5 ✅\n• Candle: 5/5 ✅\n• Glass vase with flowers: 3/10 ？ (-2 for flowers not looking like flowers)\n• Crystal ball: 3/5 ？ (-2 for not transparent)\n• Magnifying glass + newspapers: 0/10 ❌\n• Pebble brick walls: 0/10 ❌\n\nRendering Techniques (60/65+):\n• Refraction: 10/10 ✅\n• Dispersion: 10/10 ✅\n• Reflection: 10/10 ✅\n• Ray tracing optimization: 5/10 ？ (5 for good control, -5 for bad performance)\n• Volumetric fog: 10/10 ✅\n• Caustics: 5/5 ✅\n• Bloom: 5/5 ✅\n• Chromatic aberration: 5/5 ✅\n• Depth of field: 0/5 ❌ (very bad, no Bonus here)"
+            },
+            claude: {
+                name: "Claude Opus 4.1", 
+                description: "Ray Tracing Scene Score: 80/120\n\nDevelopment: 1 shot to see anything (but the lighting is wrong). After that there is constant shader compiling issue, in the end it took a total of 14 shots to reach this final result.\n\nPros:\n• Good rendering process, fast and stable, good FPS\n• Only model that made a Magnifying glass and 1 shot the prompt\n• The animation is good with fine controls of Depth of Field\n\nCons:\n• Need heavy human intervention after initial prompt (because it always hit shader compiling error without useful error message as feedback), I need to manually fix tune matching and shader code to move on\n• Strange artifacts\n• Most expensive (almost $2 per shot)\n\nScene Composition (31/55):\n• Wood table: 3/5 ？ (not very good wood grain)\n• Stained glass window: 5/5 ✅\n• Ambient lighting: 5/5 ✅\n• Candle: 5/5 ✅\n• Glass vase with flowers: 0/10 ❌\n• Crystal ball: 5/5 ✅ (multiple spheres with reflections and refractions)\n• Magnifying glass + newspapers: 5/10 ？ (-5 for missing newspapers)\n• Pebble brick walls: 3/10 ？ (have brick lines, but not correct texture)\n\nRendering Techniques (49/65+):\n• Refraction: 10/10 ✅\n• Dispersion: 10/10 ✅\n• Reflection: 10/10 ✅\n• Ray tracing optimization: 10/10 ✅\n• Volumetric fog: 0/10 ❌\n• Depth of Field: 4/5 ？ (Have bokeh effect, but tend to be too strong)\n• Caustics: 5/5 ✅"
+            },
+            gemini: {
+                name: "Gemini 2.5 Pro",
+                description: "Ray Tracing Scene Score: 93/120\n\nDevelopment: 2 shots to see anything, 2 shots to fix geometry, 3 shots to add the freeze in time function.\n\nPros:\n• Visually nice, have the most details as required, good instruction following\n• No need human intervention, Generation is fast, just provide error and problem it will come to a solution\n• Very good fps\n\nCons:\n• The scene is a bit simple\n• Less fine control on the control panel\n• Provide depth of field but no focal distance settings making it useless\n\nScene Composition (37/55):\n• Wood table: 5/5 ✅\n• Stained glass window: 5/5 ✅\n• Ambient lighting: 5/5 ✅\n• Candle: 7/5 ✅ (+2 because it have live flame effects)\n• Glass vase with flowers: 4/10 ？ (-3 for flowers, -3 for the vase floating and too simple)\n• Crystal ball: 5/5 ✅ (transparent sphere with reflections visible)\n• Magnifying glass + newspapers: 1/10 ？ (1 for attempt)\n• Pebble brick walls: 5/10 ？ (have pebble texture, but not in bricks)\n\nRendering Techniques (56/65+):\n• Refraction: 10/10 ✅\n• Dispersion: 10/10 ✅\n• Reflection: 10/10 ✅\n• Ray tracing optimization: 10/10 ✅\n• Volumetric fog: 10/10 ✅\n• Depth of Field: 1/5 ？ (better than GPT-5, but still not usable)\n• Volumetric lighting: 5/5 ✅"
+            }
+        };
+
+        const fullPrompt = `Create a beautiful WebGL ray tracing rendering of a carefully composed scene. You need to achieve 120 points to pass this test:
+
+## SCENE COMPOSITION (55 points total)
+
+### Window and Table Setting (+15 points)
+- Glossy wood table with visible grain texture and reflective lacquer finish (+5 points)
+  - Wood grain should be procedurally generated or texture-mapped
+  - Surface should show subtle reflections of surrounding objects
+- Old colorful stained glass/enamel window (+5 points)
+  - At least 3-4 different colored glass panes
+  - Visible aging effects (slight cracks, patina, or weathering)
+- Ambient lighting from outside (+5 points)
+  - Soft, diffused daylight filtering through the window
+  - Colored light projections on table from stained glass
+  - Not overpowering the candlelight atmosphere
+
+### Table Objects (+30 points, 5 per object)
+- Dimly lit candle (+5 points)
+  - Realistic flame with orange-yellow gradient
+  - Visible wax dripping or pooling
+  - Soft flickering light emission affecting nearby objects
+- Glass vase with dry flowers (+10 points)
+  - Transparent/translucent glass with proper refraction
+  - At least 3-4 dried flower stems with varied heights
+  - Subtle shadows and light interaction through glass
+- Crystal ball (+5 points)
+  - Perfect sphere with high refractive index
+  - Must show inverted reflections of the room
+  - Create caustic patterns on the table surface
+- Magnifying glass on newspapers (+10 points)
+  - Lens distortion effect visible through glass
+  - Metal or wooden handle with appropriate material properties
+  - Newspapers with readable text/imagery (can be low-res)
+  - Proper shadow and magnification of text beneath
+
+### Room Environment (+10 points)
+- Pebble brick walls (+10 points)
+  - Irregular stone/pebble pattern with mortar gaps
+  - Appropriate roughness and normal mapping
+  - Subtle color variation between individual stones
+  - Proper shadow accumulation in crevices
+
+## RENDERING TECHNIQUES (65+ points)
+
+### Core Optical Effects (+30 points)
+- Refraction (+10 points)
+  - Accurate Snell's law implementation
+  - Different refractive indices for glass, crystal, and liquids
+  - Proper handling of total internal reflection
+- Dispersion (+10 points)
+  - Wavelength-dependent refraction (rainbow effects)
+  - Particularly visible in crystal ball and glass edges
+  - Chromatic aberration in magnifying glass
+- Reflection (+10 points)
+  - Fresnel equations for realistic reflection intensity
+  - Blurred reflections on rough surfaces (wood table)
+  - Sharp reflections on smooth surfaces (crystal, glass)
+
+### Optimization Algorithm (+10 points)
+- Decaying ray tracing implementation (+10 points)
+  - Adaptive sampling based on ray contribution
+  - Russian roulette termination for efficiency
+  - Maximum ray depth with importance-based continuation
+  - Performance metrics displayed (rays/second, convergence rate)
+
+### Atmospheric Effects (+10 points)
+- Volumetric fog simulation (+10 points)
+  - Ray marching through participating media
+  - Scattering and absorption coefficients
+  - Visible light shafts from window and candle
+  - Density variation (thicker near floor/corners)
+
+### Creative Bonus Effects (+15 points possible)
+Implement ANY additional advanced rendering features that enhance the scene's visual quality or realism. Each impressive effect earns +5 points (maximum 3 effects). 
+
+Examples of what you might implement (but not limited to):
+- Advanced lighting phenomena (caustics, GI, area lights)
+- Material effects (SSS, anisotropic, iridescence)
+- Post-processing (DOF, bloom, tone mapping)
+- Atmospheric effects (dust particles, smoke)
+- Animation (flame flicker, curtain movement)
+- Novel optimization techniques
+- Procedural content generation
+- Any creative visual effect that demonstrates mastery
+
+Points awarded based on:
+- Technical complexity of implementation
+- Visual impact on the scene
+- Originality and creativity
+- Proper integration with existing elements
+
+## PERFORMANCE REQUIREMENTS
+
+### Geometry Constraints
+- Total face/triangle count: < 100,000 faces
+  - Display current face count in UI
+  - Use LOD (Level of Detail) for distant objects
+  - Optimize mesh complexity while maintaining visual quality
+  - Procedural geometry should be efficiently tessellated
+
+### Memory Constraints  
+- Total RAM usage: < 2GB
+  - Texture memory: < 512MB
+  - Geometry buffers: < 256MB
+  - Ray tracing acceleration structures: < 512MB
+  - Display current memory usage in UI
+  - Implement texture compression where appropriate
+  - Use instancing for repeated geometry
+
+### Performance Targets
+- Minimum 30 FPS at 1920x1080 resolution
+- Progressive refinement for quality improvement
+- First meaningful frame < 100ms
+- Interactive camera controls must remain responsive
+- Provide option to reduce quality for weaker hardware
+
+## TECHNICAL INTERFACE
+- Real-time statistics overlay showing:
+  - Current FPS
+  - Ray count per frame
+  - Triangle/face count
+  - Memory usage (MB/GB)
+  - Convergence percentage
+- Camera controls (orbit/pan/zoom)
+- Quality presets (low/medium/high/ultra)
+- Toggle for individual effects (for demonstration)
+
+# Submission
+You must submit your entry in a single html file that have inline js renderer and inline glsl shader, and submit your answer within single code block.`;
+
+        function loadModel() {
+            const select = document.getElementById('model-select');
+            const selectedModel = select.value;
+            const iframe = document.getElementById('demo-frame');
+            const loading = document.getElementById('loading');
+            const modelInfoDiv = document.getElementById('model-info');
+            const modelNameDiv = document.getElementById('model-name');
+            const modelDescDiv = document.getElementById('model-description');
+
+            if (selectedModel) {
+                loading.style.display = 'none';
+                iframe.style.display = 'block';
+                iframe.src = `${selectedModel}.html`;
+                
+                modelInfoDiv.style.display = 'block';
+                modelNameDiv.textContent = modelInfo[selectedModel].name;
+                modelDescDiv.textContent = modelInfo[selectedModel].description;
+            } else {
+                loading.style.display = 'flex';
+                iframe.style.display = 'none';
+                modelInfoDiv.style.display = 'none';
+            }
+        }
+
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            const collapsedHandle = document.getElementById('collapsed-handle');
+            
+            sidebar.classList.toggle('collapsed');
+            
+            if (sidebar.classList.contains('collapsed')) {
+                collapsedHandle.classList.add('show');
+            } else {
+                collapsedHandle.classList.remove('show');
+            }
+        }
+
+        function toggleDetails() {
+            const details = document.getElementById('challenge-details');
+            const btn = event.target;
+            
+            if (details.style.display === 'none' || details.style.display === '') {
+                details.style.display = 'block';
+                details.textContent = fullPrompt;
+                btn.textContent = 'Hide Full Prompt';
+            } else {
+                details.style.display = 'none';
+                btn.textContent = 'Read Full Prompt';
+            }
+        }
+
+        function copyPrompt() {
+            navigator.clipboard.writeText(fullPrompt).then(function() {
+                const btn = document.getElementById('copy-btn');
+                const originalText = btn.textContent;
+                btn.textContent = 'Copied!';
+                btn.classList.add('copied');
+                
+                setTimeout(function() {
+                    btn.textContent = originalText;
+                    btn.classList.remove('copied');
+                }, 2000);
+            }).catch(function(err) {
+                console.error('Failed to copy prompt: ', err);
+                alert('Failed to copy prompt to clipboard');
+            });
+        }
+
+        // Handle iframe loading states
+        document.getElementById('demo-frame').addEventListener('load', function() {
+            // Iframe loaded successfully
+        });
+
+        document.getElementById('demo-frame').addEventListener('error', function() {
+            const loading = document.getElementById('loading');
+            loading.textContent = 'Error loading demo. Please check if the file exists.';
+            loading.style.display = 'flex';
+            this.style.display = 'none';
+        });
+    </script>
+</body>
+</html>

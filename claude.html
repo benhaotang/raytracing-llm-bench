@@ -1,0 +1,1210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGL Ray Tracer - Stained Glass Scene</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: 'Courier New', monospace;
+            background: #000;
+        }
+        canvas {
+            display: block;
+            cursor: grab;
+        }
+        canvas:active {
+            cursor: grabbing;
+        }
+        #stats {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #0f0;
+            background: rgba(0,0,0,0.7);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            text-shadow: 0 0 3px #0f0;
+            border: 1px solid #0f0;
+            min-width: 200px;
+        }
+        #controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            color: #0f0;
+            background: rgba(0,0,0,0.7);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            border: 1px solid #0f0;
+            min-width: 250px;
+        }
+        button {
+            background: #0a0;
+            color: #000;
+            border: none;
+            padding: 5px 10px;
+            margin: 2px;
+            cursor: pointer;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+        button:hover {
+            background: #0f0;
+        }
+        button.active {
+            background: #f00;
+        }
+        button.freeze {
+            background: #00f;
+            color: #fff;
+        }
+        button.freeze:hover {
+            background: #33f;
+        }
+        select {
+            background: #0a0;
+            color: #000;
+            border: none;
+            padding: 5px;
+            margin: 2px;
+            cursor: pointer;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+        .slider-container {
+            margin: 10px 0;
+        }
+        .slider-label {
+            display: inline-block;
+            width: 80px;
+            color: #0f0;
+        }
+        input[type="range"] {
+            width: 120px;
+            vertical-align: middle;
+        }
+        .slider-value {
+            display: inline-block;
+            width: 40px;
+            text-align: right;
+            color: #0ff;
+            font-weight: bold;
+        }
+        .stat-line {
+            margin: 3px 0;
+        }
+        .stat-value {
+            color: #0ff;
+            font-weight: bold;
+        }
+        .converged {
+            color: #ff0;
+        }
+        .freeze-mode {
+            color: #f0f;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="stats">
+        <div class="stat-line">FPS: <span id="fps" class="stat-value">0</span></div>
+        <div class="stat-line">Rays/Frame: <span id="rays" class="stat-value">0</span></div>
+        <div class="stat-line">Triangles: <span id="triangles" class="stat-value">0</span></div>
+        <div class="stat-line">Memory: <span id="memory" class="stat-value">0</span> MB</div>
+        <div class="stat-line">Convergence: <span id="convergence" class="stat-value">0</span>%</div>
+        <div class="stat-line">Frame: <span id="frame" class="stat-value">0</span>/<span id="maxframe" class="stat-value">50</span></div>
+        <div class="stat-line" id="status">Status: <span class="stat-value">Rendering...</span></div>
+    </div>
+    <div id="controls">
+        <div>Quality: 
+            <select id="quality">
+                <option value="low">Low</option>
+                <option value="medium" selected>Medium</option>
+                <option value="high">High</option>
+                <option value="ultra">Ultra</option>
+            </select>
+        </div>
+        <div class="slider-container">
+            <span class="slider-label">Exposure:</span>
+            <input type="range" id="exposure" min="0.1" max="25" step="0.1" value="1.0">
+            <span class="slider-value" id="exposureValue">1.0</span>
+        </div>
+        <div class="slider-container">
+            <span class="slider-label">Window Light:</span>
+            <input type="range" id="windowLight" min="0.1" max="5" step="0.1" value="1.0">
+            <span class="slider-value" id="windowLightValue">1.0</span>
+        </div>
+        <div class="slider-container">
+            <span class="slider-label">Focus Dist:</span>
+            <input type="range" id="focusDistance" min="1" max="10" step="0.1" value="5">
+            <span class="slider-value" id="focusValue">5.0</span>
+        </div>
+        <div class="slider-container">
+            <span class="slider-label">Aperture:</span>
+            <input type="range" id="aperture" min="0" max="1" step="0.05" value="0">
+            <span class="slider-value" id="apertureValue">0.0</span>
+        </div>
+        <div style="margin-top: 10px;">
+            <button id="toggleDOF">DOF: OFF</button>
+            <button id="toggleDispersion">Dispersion: ON</button>
+            <button id="reset">Reset Camera</button>
+        </div>
+        <div style="margin-top: 5px;">
+            <button id="freezeFrame" class="freeze">🎯 Freeze & HD Render</button>
+        </div>
+    </div>
+
+    <script>
+        const vertexShaderSource = `
+            attribute vec2 position;
+            void main() {
+                gl_Position = vec4(position, 0.0, 1.0);
+            }
+        `;
+
+        const fragmentShaderSource = `
+            precision highp float;
+            
+            uniform vec2 resolution;
+            uniform float time;
+            uniform vec3 cameraPos;
+            uniform vec3 cameraDir;
+            uniform vec3 cameraUp;
+            uniform float frame;
+            uniform float dofEnabled;
+            uniform float dispersionEnabled;
+            uniform float quality;
+            uniform sampler2D previousFrame;
+            uniform float converged;
+            uniform float exposure;
+            uniform float focusDistance;
+            uniform float aperture;
+            uniform float freezeMode;
+            uniform float windowLightIntensity;
+            uniform float maxFrames;
+            uniform float skipRayTracing;
+            
+            // Constants
+            const float PI = 3.14159265359;
+            const float EPSILON = 0.001;
+            const int MAX_BOUNCES = 6;
+            const int MAX_SAMPLES = 1;
+            const float FOV = 60.0;
+            
+            // Material IDs
+            const int MAT_DIFFUSE = 0;
+            const int MAT_GLASS = 1;
+            const int MAT_CRYSTAL = 2;
+            const int MAT_WOOD = 3;
+            const int MAT_METAL = 4;
+            const int MAT_CANDLE = 5;
+            const int MAT_STAINED_GLASS = 6;
+            const int MAT_BRICK = 7;
+            const int MAT_PAPER = 8;
+            
+            // RNG
+            float seed = 0.0;
+            float rand() {
+                seed = fract(sin(seed * 12.9898 + 78.233) * 43758.5453);
+                return seed;
+            }
+            
+            vec2 randomInUnitDisk() {
+                vec2 p;
+                for(int i = 0; i < 10; i++) {
+                    p = vec2(rand(), rand()) * 2.0 - 1.0;
+                    if(dot(p, p) < 1.0) break;
+                }
+                return p;
+            }
+            
+            vec3 randomInUnitSphere() {
+                vec3 p;
+                for(int i = 0; i < 10; i++) {
+                    p = vec3(rand(), rand(), rand()) * 2.0 - 1.0;
+                    if(length(p) < 1.0) break;
+                }
+                return normalize(p);
+            }
+            
+            // Structures
+            struct Ray {
+                vec3 origin;
+                vec3 direction;
+            };
+            
+            struct Hit {
+                bool hit;
+                float t;
+                vec3 point;
+                vec3 normal;
+                int material;
+                vec3 color;
+                float roughness;
+                float ior;
+                float metallic;
+                float emission;
+            };
+            
+            // Procedural wood texture
+            vec3 woodTexture(vec3 p) {
+                float grain = sin(p.x * 20.0 + sin(p.z * 5.0) * 2.0) * 0.5 + 0.5;
+                grain = pow(grain, 0.3);
+                vec3 color1 = vec3(0.4, 0.2, 0.1);
+                vec3 color2 = vec3(0.6, 0.3, 0.15);
+                return mix(color1, color2, grain);
+            }
+            
+            // Procedural brick texture
+            vec3 brickTexture(vec3 p) {
+                vec2 brick = floor(p.xy * 4.0);
+                float mortar = step(0.9, fract(p.x * 4.0)) + step(0.9, fract(p.y * 4.0));
+                vec3 brickColor = vec3(0.5, 0.3, 0.2) + vec3(rand() * 0.1);
+                vec3 mortarColor = vec3(0.3, 0.3, 0.3);
+                return mix(brickColor, mortarColor, mortar);
+            }
+            
+            // Stained glass colors
+            vec3 stainedGlassColor(vec3 p) {
+                float pattern = sin(p.x * 10.0) * sin(p.y * 10.0);
+                if (pattern > 0.5) return vec3(0.8, 0.2, 0.2);
+                else if (pattern > 0.0) return vec3(0.2, 0.8, 0.2);
+                else if (pattern > -0.5) return vec3(0.2, 0.2, 0.8);
+                else return vec3(0.8, 0.8, 0.2);
+            }
+            
+            // Ray-sphere intersection
+            Hit intersectSphere(Ray ray, vec3 center, float radius, int material) {
+                Hit hit;
+                hit.hit = false;
+                
+                vec3 oc = ray.origin - center;
+                float b = dot(oc, ray.direction);
+                float c = dot(oc, oc) - radius * radius;
+                float discriminant = b * b - c;
+                
+                if (discriminant > 0.0) {
+                    float t = -b - sqrt(discriminant);
+                    if (t > EPSILON) {
+                        hit.hit = true;
+                        hit.t = t;
+                        hit.point = ray.origin + ray.direction * t;
+                        hit.normal = normalize(hit.point - center);
+                        hit.material = material;
+                        return hit;
+                    }
+                }
+                
+                return hit;
+            }
+            
+            // Ray-plane intersection
+            Hit intersectPlane(Ray ray, vec3 point, vec3 normal, int material) {
+                Hit hit;
+                hit.hit = false;
+                
+                float denom = dot(normal, ray.direction);
+                if (abs(denom) > EPSILON) {
+                    float t = dot(point - ray.origin, normal) / denom;
+                    if (t > EPSILON) {
+                        hit.hit = true;
+                        hit.t = t;
+                        hit.point = ray.origin + ray.direction * t;
+                        hit.normal = normal;
+                        hit.material = material;
+                        return hit;
+                    }
+                }
+                
+                return hit;
+            }
+            
+            // Ray-box intersection
+            Hit intersectBox(Ray ray, vec3 boxMin, vec3 boxMax, int material) {
+                Hit hit;
+                hit.hit = false;
+                
+                vec3 invDir = 1.0 / ray.direction;
+                vec3 t1 = (boxMin - ray.origin) * invDir;
+                vec3 t2 = (boxMax - ray.origin) * invDir;
+                
+                vec3 tMin = min(t1, t2);
+                vec3 tMax = max(t1, t2);
+                
+                float tNear = max(max(tMin.x, tMin.y), tMin.z);
+                float tFar = min(min(tMax.x, tMax.y), tMax.z);
+                
+                if (tNear < tFar && tFar > EPSILON) {
+                    hit.hit = true;
+                    if (tNear > EPSILON) {
+                        hit.t = tNear;
+                    } else {
+                        hit.t = tFar;
+                    }
+                    hit.point = ray.origin + ray.direction * hit.t;
+                    
+                    // Calculate normal
+                    vec3 center = (boxMin + boxMax) * 0.5;
+                    vec3 d = hit.point - center;
+                    vec3 halfSize = (boxMax - boxMin) * 0.5;
+                    float bias = 1.0001;
+                    hit.normal = normalize(d / halfSize * bias);
+                    
+                    hit.material = material;
+                    return hit;
+                }
+                
+                return hit;
+            }
+            
+            // Scene intersection
+            Hit intersectScene(Ray ray) {
+                Hit closestHit;
+                closestHit.hit = false;
+                closestHit.t = 1e10;
+                
+                // Table (wood)
+                Hit tableHit = intersectBox(ray, vec3(-2.0, -0.1, -2.0), vec3(2.0, 0.0, 2.0), MAT_WOOD);
+                if (tableHit.hit && tableHit.t < closestHit.t) {
+                    closestHit = tableHit;
+                    closestHit.color = woodTexture(closestHit.point);
+                    closestHit.roughness = 0.3;
+                    closestHit.metallic = 0.0;
+                    closestHit.emission = 0.0;
+                    closestHit.ior = 1.0;
+                }
+                
+                // Crystal ball
+                Hit crystalHit = intersectSphere(ray, vec3(0.5, 0.3, 0.5), 0.3, MAT_CRYSTAL);
+                if (crystalHit.hit && crystalHit.t < closestHit.t) {
+                    closestHit = crystalHit;
+                    closestHit.color = vec3(0.95, 0.95, 1.0);
+                    closestHit.roughness = 0.0;
+                    closestHit.ior = 2.4;
+                    closestHit.metallic = 0.0;
+                    closestHit.emission = 0.0;
+                }
+                
+                // Glass vase
+                Hit vaseHit = intersectSphere(ray, vec3(-0.7, 0.25, -0.3), 0.15, MAT_GLASS);
+                if (vaseHit.hit && vaseHit.t < closestHit.t) {
+                    closestHit = vaseHit;
+                    closestHit.color = vec3(0.9, 0.95, 0.9);
+                    closestHit.roughness = 0.05;
+                    closestHit.ior = 1.5;
+                    closestHit.metallic = 0.0;
+                    closestHit.emission = 0.0;
+                }
+                
+                // Candle
+                Hit candleHit = intersectBox(ray, vec3(0.8, 0.0, -0.5), vec3(0.9, 0.2, -0.4), MAT_CANDLE);
+                if (candleHit.hit && candleHit.t < closestHit.t) {
+                    closestHit = candleHit;
+                    closestHit.color = vec3(0.9, 0.9, 0.8);
+                    closestHit.roughness = 0.5;
+                    closestHit.metallic = 0.0;
+                    closestHit.emission = 0.0;
+                    closestHit.ior = 1.0;
+                }
+                
+                // Candle flame (emissive sphere)
+                Hit flameHit = intersectSphere(ray, vec3(0.85, 0.25, -0.45), 0.05, MAT_CANDLE);
+                if (flameHit.hit && flameHit.t < closestHit.t) {
+                    closestHit = flameHit;
+                    float flicker = sin(time * 10.0) * 0.1 + 0.9;
+                    closestHit.color = vec3(1.0, 0.6, 0.2) * flicker;
+                    closestHit.roughness = 0.0;
+                    closestHit.metallic = 0.0;
+                    closestHit.emission = 3.0 * flicker;
+                    closestHit.ior = 1.0;
+                }
+                
+                // Magnifying glass handle
+                Hit handleHit = intersectBox(ray, vec3(-0.2, 0.05, 0.3), vec3(-0.15, 0.1, 0.6), MAT_WOOD);
+                if (handleHit.hit && handleHit.t < closestHit.t) {
+                    closestHit = handleHit;
+                    closestHit.color = vec3(0.3, 0.2, 0.1);
+                    closestHit.roughness = 0.4;
+                    closestHit.metallic = 0.0;
+                    closestHit.emission = 0.0;
+                    closestHit.ior = 1.0;
+                }
+                
+                // Magnifying glass lens
+                Hit lensHit = intersectSphere(ray, vec3(-0.175, 0.075, 0.3), 0.08, MAT_GLASS);
+                if (lensHit.hit && lensHit.t < closestHit.t) {
+                    closestHit = lensHit;
+                    closestHit.color = vec3(0.95, 0.95, 0.95);
+                    closestHit.roughness = 0.0;
+                    closestHit.ior = 1.5;
+                    closestHit.metallic = 0.0;
+                    closestHit.emission = 0.0;
+                }
+                
+                // Newspaper
+                Hit paperHit = intersectPlane(ray, vec3(0.0, 0.01, 0.0), vec3(0.0, 1.0, 0.0), MAT_PAPER);
+                if (paperHit.hit && paperHit.t < closestHit.t) {
+                    if (abs(paperHit.point.x) < 0.4 && abs(paperHit.point.z - 0.3) < 0.2) {
+                        closestHit = paperHit;
+                        float text = sin(paperHit.point.x * 50.0) * sin(paperHit.point.z * 50.0);
+                        closestHit.color = vec3(0.9) + vec3(text * 0.1);
+                        closestHit.roughness = 0.8;
+                        closestHit.metallic = 0.0;
+                        closestHit.emission = 0.0;
+                        closestHit.ior = 1.0;
+                    }
+                }
+                
+                // Back wall with window
+                Hit wallHit = intersectPlane(ray, vec3(0.0, 0.0, -3.0), vec3(0.0, 0.0, 1.0), MAT_BRICK);
+                if (wallHit.hit && wallHit.t < closestHit.t) {
+                    // Check if we hit the window area
+                    if (abs(wallHit.point.x) < 1.0 && wallHit.point.y > 0.5 && wallHit.point.y < 2.0) {
+                        closestHit = wallHit;
+                        closestHit.material = MAT_STAINED_GLASS;
+                        closestHit.color = stainedGlassColor(wallHit.point);
+                        closestHit.roughness = 0.0;
+                        closestHit.ior = 1.5;
+                        closestHit.metallic = 0.0;
+                        closestHit.emission = 0.2 * windowLightIntensity;
+                    } else {
+                        closestHit = wallHit;
+                        closestHit.color = brickTexture(wallHit.point);
+                        closestHit.roughness = 0.9;
+                        closestHit.metallic = 0.0;
+                        closestHit.emission = 0.0;
+                        closestHit.ior = 1.0;
+                    }
+                }
+                
+                // Side walls
+                Hit leftWallHit = intersectPlane(ray, vec3(-3.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), MAT_BRICK);
+                if (leftWallHit.hit && leftWallHit.t < closestHit.t) {
+                    closestHit = leftWallHit;
+                    closestHit.color = brickTexture(closestHit.point);
+                    closestHit.roughness = 0.9;
+                    closestHit.metallic = 0.0;
+                    closestHit.emission = 0.0;
+                    closestHit.ior = 1.0;
+                }
+                
+                Hit rightWallHit = intersectPlane(ray, vec3(3.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0), MAT_BRICK);
+                if (rightWallHit.hit && rightWallHit.t < closestHit.t) {
+                    closestHit = rightWallHit;
+                    closestHit.color = brickTexture(closestHit.point);
+                    closestHit.roughness = 0.9;
+                    closestHit.metallic = 0.0;
+                    closestHit.emission = 0.0;
+                    closestHit.ior = 1.0;
+                }
+                
+                // Floor
+                Hit floorHit = intersectPlane(ray, vec3(0.0, -0.1, 0.0), vec3(0.0, 1.0, 0.0), MAT_DIFFUSE);
+                if (floorHit.hit && floorHit.t < closestHit.t) {
+                    closestHit = floorHit;
+                    closestHit.color = vec3(0.3, 0.3, 0.3);
+                    closestHit.roughness = 0.7;
+                    closestHit.metallic = 0.0;
+                    closestHit.emission = 0.0;
+                    closestHit.ior = 1.0;
+                }
+                
+                // Ceiling
+                Hit ceilingHit = intersectPlane(ray, vec3(0.0, 3.0, 0.0), vec3(0.0, -1.0, 0.0), MAT_DIFFUSE);
+                if (ceilingHit.hit && ceilingHit.t < closestHit.t) {
+                    closestHit = ceilingHit;
+                    closestHit.color = vec3(0.8, 0.8, 0.7);
+                    closestHit.roughness = 0.8;
+                    closestHit.metallic = 0.0;
+                    closestHit.emission = 0.0;
+                    closestHit.ior = 1.0;
+                }
+                
+                // Add dried flowers in vase (simple lines)
+                for(int i = 0; i < 3; i++) {
+                    float angle = float(i) * 2.0;
+                    vec3 flowerPos = vec3(-0.7 + sin(angle) * 0.05, 0.4 + float(i) * 0.1, -0.3 + cos(angle) * 0.05);
+                    Hit flowerHit = intersectSphere(ray, flowerPos, 0.02, MAT_DIFFUSE);
+                    if (flowerHit.hit && flowerHit.t < closestHit.t) {
+                        closestHit = flowerHit;
+                        closestHit.color = vec3(0.7, 0.6, 0.4);
+                        closestHit.roughness = 0.8;
+                        closestHit.metallic = 0.0;
+                        closestHit.emission = 0.0;
+                        closestHit.ior = 1.0;
+                    }
+                }
+                
+                return closestHit;
+            }
+            
+            // Fresnel
+            float fresnel(vec3 incident, vec3 normal, float ior) {
+                float cosi = clamp(dot(incident, normal), -1.0, 1.0);
+                float etai = 1.0, etat = ior;
+                if (cosi > 0.0) {
+                    float temp = etai;
+                    etai = etat;
+                    etat = temp;
+                }
+                float sint = etai / etat * sqrt(max(0.0, 1.0 - cosi * cosi));
+                if (sint >= 1.0) return 1.0;
+                
+                float cost = sqrt(max(0.0, 1.0 - sint * sint));
+                cosi = abs(cosi);
+                float Rs = ((etat * cosi) - (etai * cost)) / ((etat * cosi) + (etai * cost));
+                float Rp = ((etai * cosi) - (etat * cost)) / ((etai * cosi) + (etat * cost));
+                return (Rs * Rs + Rp * Rp) / 2.0;
+            }
+            
+            // Refraction with dispersion
+            vec3 refractRay(vec3 incident, vec3 normal, float ior, float wavelength) {
+                float adjustedIOR = ior;
+                if (dispersionEnabled > 0.5) {
+                    // Cauchy's equation for dispersion
+                    adjustedIOR = ior + 0.01 / (wavelength * wavelength);
+                }
+                
+                float cosi = clamp(dot(incident, normal), -1.0, 1.0);
+                float etai = 1.0, etat = adjustedIOR;
+                vec3 n = normal;
+                
+                if (cosi < 0.0) {
+                    cosi = -cosi;
+                } else {
+                    float temp = etai;
+                    etai = etat;
+                    etat = temp;
+                    n = -normal;
+                }
+                
+                float eta = etai / etat;
+                float k = 1.0 - eta * eta * (1.0 - cosi * cosi);
+                
+                if (k < 0.0) {
+                    return vec3(0.0);
+                }
+                
+                return eta * incident + (eta * cosi - sqrt(k)) * n;
+            }
+            
+            // Simple caustics calculation - simplified to avoid conditionals
+            float calculateCaustics(vec3 p) {
+                vec3 crystalPos = vec3(0.5, 0.3, 0.5);
+                vec3 toPoint = p - crystalPos;
+                
+                float animTime = time * 2.0;
+                float pattern = sin(length(toPoint.xz) * 10.0 - animTime) * 0.5 + 0.5;
+                float dist = length(toPoint);
+                
+                float causticMask = step(dist, 1.0) * step(p.y, 0.1);
+                return pattern * 0.3 * (1.0 - dist) * causticMask;
+            }
+            
+            // Path tracing
+            vec3 trace(Ray ray) {
+                vec3 color = vec3(0.0);
+                vec3 throughput = vec3(1.0);
+                
+                for (int bounce = 0; bounce < MAX_BOUNCES; bounce++) {
+                    Hit hit = intersectScene(ray);
+                    
+                    if (!hit.hit) {
+                        // Sky color with window light intensity
+                        vec3 skyColor = vec3(0.5, 0.6, 0.7) * 0.2 * windowLightIntensity;
+                        color += throughput * skyColor;
+                        break;
+                    }
+                    
+                    // Add caustics to diffuse surfaces
+                    if (hit.material == MAT_WOOD || hit.material == MAT_PAPER || hit.material == MAT_DIFFUSE) {
+                        float caustic = calculateCaustics(hit.point);
+                        color += throughput * vec3(1.0, 0.9, 0.7) * caustic;
+                    }
+                    
+                    // Emission
+                    if (hit.emission > 0.0) {
+                        color += throughput * hit.color * hit.emission;
+                    }
+                    
+                    // Russian roulette termination with proper probability
+                    float p = max(throughput.r, max(throughput.g, throughput.b));
+                    if (bounce > 2) {
+                        if (rand() > p) break;
+                        throughput /= p;
+                    }
+                    
+                    // Material interaction
+                    if (hit.material == MAT_GLASS || hit.material == MAT_CRYSTAL || hit.material == MAT_STAINED_GLASS) {
+                        // Glass/Crystal refraction
+                        float fr = fresnel(ray.direction, hit.normal, hit.ior);
+                        
+                        if (rand() < fr) {
+                            // Reflection
+                            ray.origin = hit.point + hit.normal * EPSILON;
+                            ray.direction = reflect(ray.direction, hit.normal);
+                            throughput *= hit.color;
+                        } else {
+                            // Refraction with dispersion
+                            float wavelength = 400.0 + rand() * 300.0; // Visible spectrum
+                            vec3 refracted = refractRay(ray.direction, hit.normal, hit.ior, wavelength);
+                            
+                            if (length(refracted) > 0.0) {
+                                ray.origin = hit.point - hit.normal * EPSILON;
+                                ray.direction = normalize(refracted);
+                                
+                                if (dispersionEnabled > 0.5 && hit.material == MAT_CRYSTAL) {
+                                    // Chromatic dispersion
+                                    if (wavelength < 500.0) throughput *= vec3(0.5, 0.5, 1.0);
+                                    else if (wavelength < 600.0) throughput *= vec3(0.5, 1.0, 0.5);
+                                    else throughput *= vec3(1.0, 0.5, 0.5);
+                                }
+                                
+                                throughput *= hit.color;
+                            } else {
+                                // Total internal reflection
+                                ray.origin = hit.point + hit.normal * EPSILON;
+                                ray.direction = reflect(ray.direction, hit.normal);
+                                throughput *= hit.color;
+                            }
+                        }
+                    } else if (hit.metallic > 0.5) {
+                        // Metallic reflection
+                        ray.origin = hit.point + hit.normal * EPSILON;
+                        vec3 reflected = reflect(ray.direction, hit.normal);
+                        vec3 randomDir = normalize(hit.normal + randomInUnitSphere() * hit.roughness);
+                        ray.direction = normalize(mix(reflected, randomDir, hit.roughness));
+                        throughput *= hit.color;
+                    } else {
+                        // Diffuse
+                        ray.origin = hit.point + hit.normal * EPSILON;
+                        ray.direction = normalize(hit.normal + randomInUnitSphere());
+                        throughput *= hit.color;
+                    }
+                    
+                    // Prevent throughput from exploding
+                    throughput = min(throughput, vec3(10.0));
+                }
+                
+                return color;
+            }
+            
+            void main() {
+                // Initialize RNG
+                seed = (gl_FragCoord.x + gl_FragCoord.y * resolution.x) * (frame + 1.0) * 0.001;
+                seed += time * 0.01;
+
+                vec3 color = vec3(0.0);
+                
+                // Skip expensive ray tracing if converged in freeze mode
+                if (skipRayTracing > 0.5) {
+                    vec2 texCoord = gl_FragCoord.xy / resolution;
+                    color = texture2D(previousFrame, texCoord).rgb;
+                } else {
+                    // Normal ray tracing path
+                // Camera setup
+                vec3 right = normalize(cross(cameraDir, cameraUp));
+                vec3 up = cross(right, cameraDir);
+                
+                float aspectRatio = resolution.x / resolution.y;
+                float fovRad = FOV * PI / 180.0;
+                float halfHeight = tan(fovRad / 2.0);
+                float halfWidth = aspectRatio * halfHeight;
+                
+                // Calculate ray with DOF
+                vec2 jitter = vec2(rand() - 0.5, rand() - 0.5);
+                vec2 uv = (gl_FragCoord.xy + jitter) / resolution;
+                uv = uv * 2.0 - 1.0;
+                
+                vec3 rayDir = normalize(
+                    cameraDir + 
+                    right * uv.x * halfWidth + 
+                    up * uv.y * halfHeight
+                );
+                
+                Ray ray;
+                ray.origin = cameraPos;
+                ray.direction = rayDir;
+                
+                // Depth of Field
+                if (dofEnabled > 0.5 && aperture > 0.01) {
+                    vec3 focalPoint = ray.origin + ray.direction * focusDistance;
+                    vec2 lensOffset = randomInUnitDisk() * aperture * 0.1;
+                    ray.origin = cameraPos + right * lensOffset.x + up * lensOffset.y;
+                    ray.direction = normalize(focalPoint - ray.origin);
+                }
+                
+                color = trace(ray);
+                
+                // Apply exposure before accumulation
+                color *= exposure;
+                
+                // Temporal accumulation
+                vec2 texCoord = gl_FragCoord.xy / resolution;
+                vec3 previousColor = texture2D(previousFrame, texCoord).rgb;
+
+                // Reverse tone mapping to get back to linear space for proper accumulation
+                previousColor = pow(previousColor, vec3(2.2)); // Reverse gamma
+                previousColor = previousColor * vec3(0.5) / (vec3(1.0) - previousColor + vec3(0.0001)); // Reverse Reinhard (with epsilon to avoid division by zero)
+
+
+                // Check if we should accumulate (not yet at max frames)
+                if (frame < maxFrames) {
+                    // Still accumulating
+                    float blendFactor = 1.0 / (frame + 1.0);
+                    color = mix(previousColor, color, blendFactor);
+                } else {
+                    // Reached max frames
+                    if (freezeMode > 0.5) {
+                        // In freeze mode and converged - just output the accumulated result
+                        color = previousColor;
+                    } else {
+                        // Normal mode converged - use current frame for interactivity
+                        color = color;
+                    }
+                }
+                }
+                
+                // Clamp to prevent any overflow
+                color = clamp(color, vec3(0.0), vec3(5.0));
+                
+                // Only apply tone mapping if we did ray tracing
+                // When skipRayTracing is true, color is already tone-mapped from previousFrame
+                if (skipRayTracing < 0.5) {
+                    // Improved tone mapping
+                    color = color / (color + vec3(0.5)); // Modified Reinhard
+                    color = pow(color, vec3(1.0 / 2.2)); // Gamma correction
+                }
+                gl_FragColor = vec4(color, 1.0);
+            }
+        `;
+
+        // Configuration
+        const MAX_ACCUMULATION_FRAMES = 50; // Normal convergence limit
+        const FREEZE_MAX_FRAMES = 500; // Extended limit for freeze mode
+
+        // WebGL setup
+        const canvas = document.getElementById('canvas');
+        const gl = canvas.getContext('webgl');
+        
+        if (!gl) {
+            alert('WebGL not supported');
+        }
+
+        // Compile shaders
+        function compileShader(source, type) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error('Shader compilation error:', gl.getShaderInfoLog(shader));
+                return null;
+            }
+            
+            return shader;
+        }
+
+        const vertexShader = compileShader(vertexShaderSource, gl.VERTEX_SHADER);
+        const fragmentShader = compileShader(fragmentShaderSource, gl.FRAGMENT_SHADER);
+
+        if (!vertexShader || !fragmentShader) {
+            alert('Shader compilation failed. Please check the console for errors.');
+            throw new Error('Shader compilation failed');
+        }
+
+        // Create program
+        const program = gl.createProgram();
+        gl.attachShader(program, vertexShader);
+        gl.attachShader(program, fragmentShader);
+        gl.linkProgram(program);
+
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+            console.error('Program linking error:', gl.getProgramInfoLog(program));
+        }
+
+        // Create vertex buffer
+        const vertices = new Float32Array([
+            -1, -1,
+            1, -1,
+            -1, 1,
+            1, 1
+        ]);
+
+        const vertexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+        // Get attribute and uniform locations
+        const positionLocation = gl.getAttribLocation(program, 'position');
+        const resolutionLocation = gl.getUniformLocation(program, 'resolution');
+        const timeLocation = gl.getUniformLocation(program, 'time');
+        const cameraPosLocation = gl.getUniformLocation(program, 'cameraPos');
+        const cameraDirLocation = gl.getUniformLocation(program, 'cameraDir');
+        const cameraUpLocation = gl.getUniformLocation(program, 'cameraUp');
+        const frameLocation = gl.getUniformLocation(program, 'frame');
+        const dofEnabledLocation = gl.getUniformLocation(program, 'dofEnabled');
+        const dispersionEnabledLocation = gl.getUniformLocation(program, 'dispersionEnabled');
+        const qualityLocation = gl.getUniformLocation(program, 'quality');
+        const previousFrameLocation = gl.getUniformLocation(program, 'previousFrame');
+        const convergedLocation = gl.getUniformLocation(program, 'converged');
+        const exposureLocation = gl.getUniformLocation(program, 'exposure');
+        const focusDistanceLocation = gl.getUniformLocation(program, 'focusDistance');
+        const apertureLocation = gl.getUniformLocation(program, 'aperture');
+        const freezeModeLocation = gl.getUniformLocation(program, 'freezeMode');
+        const windowLightIntensityLocation = gl.getUniformLocation(program, 'windowLightIntensity');
+        const maxFramesLocation = gl.getUniformLocation(program, 'maxFrames');
+        const skipRayTracingLocation = gl.getUniformLocation(program, 'skipRayTracing');
+ 
+
+        // Create framebuffers for temporal accumulation
+        function createFramebuffer(width, height) {
+            const framebuffer = gl.createFramebuffer();
+            gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+            
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+            
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            
+            return { framebuffer, texture };
+        }
+
+        // Camera state
+        let cameraDistance = 5;
+        let cameraAngleX = 0.3;
+        let cameraAngleY = 0;
+        let cameraPos = [0, 1.5, 5];
+        let cameraTarget = [0, 0.5, 0];
+        let frame = 0;
+        let hasConverged = false;
+        let freezeMode = false;
+
+        // Settings
+        let enableDOF = false;
+        let enableDispersion = true;
+        let quality = 2; // Medium by default
+        let exposure = 1.0;
+        let focusDistance = 5.0;
+        let aperture = 0.0;
+        let windowLightIntensity = 1.0;
+
+        // Mouse controls
+        let mouseDown = false;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (!freezeMode) {
+                mouseDown = true;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+                canvas.style.cursor = 'grabbing';
+            }
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            mouseDown = false;
+            canvas.style.cursor = freezeMode ? 'not-allowed' : 'grab';
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (mouseDown && !freezeMode) {
+                const deltaX = e.clientX - lastMouseX;
+                const deltaY = e.clientY - lastMouseY;
+                
+                cameraAngleY += deltaX * 0.01;
+                cameraAngleX = Math.max(-Math.PI/2, Math.min(Math.PI/2, cameraAngleX - deltaY * 0.01));
+                
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+                
+                frame = 0; // Reset accumulation
+                hasConverged = false;
+            }
+        });
+
+        canvas.addEventListener('wheel', (e) => {
+            if (!freezeMode) {
+                e.preventDefault();
+                cameraDistance = Math.max(2, Math.min(10, cameraDistance + e.deltaY * 0.001));
+                focusDistance = cameraDistance; // Auto-adjust focus
+                document.getElementById('focusDistance').value = focusDistance;
+                document.getElementById('focusValue').textContent = focusDistance.toFixed(1);
+                frame = 0; // Reset accumulation
+                hasConverged = false;
+            }
+        });
+
+        // UI controls
+        const dofButton = document.getElementById('toggleDOF');
+        dofButton.addEventListener('click', () => {
+            if (!freezeMode) {
+                enableDOF = !enableDOF;
+                dofButton.textContent = `DOF: ${enableDOF ? 'ON' : 'OFF'}`;
+                dofButton.className = enableDOF ? '' : 'active';
+                frame = 0;
+                hasConverged = false;
+            }
+        });
+
+        const dispersionButton = document.getElementById('toggleDispersion');
+        dispersionButton.addEventListener('click', () => {
+            if (!freezeMode) {
+                enableDispersion = !enableDispersion;
+                dispersionButton.textContent = `Dispersion: ${enableDispersion ? 'ON' : 'OFF'}`;
+                dispersionButton.className = enableDispersion ? '' : 'active';
+                frame = 0;
+                hasConverged = false;
+            }
+        });
+
+        document.getElementById('reset').addEventListener('click', () => {
+            if (!freezeMode) {
+                cameraDistance = 5;
+                cameraAngleX = 0.3;
+                cameraAngleY = 0;
+                frame = 0;
+                hasConverged = false;
+                focusDistance = 5.0;
+                document.getElementById('focusDistance').value = focusDistance;
+                document.getElementById('focusValue').textContent = focusDistance.toFixed(1);
+            }
+        });
+
+        document.getElementById('quality').addEventListener('change', (e) => {
+            if (!freezeMode) {
+                const qualityMap = { low: 1, medium: 2, high: 3, ultra: 4 };
+                quality = qualityMap[e.target.value];
+                frame = 0;
+                hasConverged = false;
+            }
+        });
+
+        // Exposure slider
+        document.getElementById('exposure').addEventListener('input', (e) => {
+            exposure = parseFloat(e.target.value);
+            document.getElementById('exposureValue').textContent = exposure.toFixed(1);
+            frame = 0;
+            hasConverged = false;
+        });
+
+        // Window light slider
+        document.getElementById('windowLight').addEventListener('input', (e) => {
+            windowLightIntensity = parseFloat(e.target.value);
+            document.getElementById('windowLightValue').textContent = windowLightIntensity.toFixed(1);
+            frame = 0;
+            hasConverged = false;
+        });
+
+        // Focus distance slider
+        document.getElementById('focusDistance').addEventListener('input', (e) => {
+            if (!freezeMode) {
+                focusDistance = parseFloat(e.target.value);
+                document.getElementById('focusValue').textContent = focusDistance.toFixed(1);
+                frame = 0;
+                hasConverged = false;
+            }
+        });
+
+        // Aperture slider
+        document.getElementById('aperture').addEventListener('input', (e) => {
+            if (!freezeMode) {
+                aperture = parseFloat(e.target.value);
+                document.getElementById('apertureValue').textContent = aperture.toFixed(2);
+                frame = 0;
+                hasConverged = false;
+            }
+        });
+
+        // Freeze frame button
+        const freezeButton = document.getElementById('freezeFrame');
+        freezeButton.addEventListener('click', () => {
+            freezeMode = !freezeMode;
+            if (freezeMode) {
+                freezeButton.textContent = '⏹️ Stop HD Render';
+                freezeButton.style.background = '#f00';
+                canvas.style.cursor = 'not-allowed';
+                quality = 4; // Force ultra quality
+                frame = 0; // Reset for HD accumulation
+                hasConverged = false;
+            } else {
+                freezeButton.textContent = '🎯 Freeze & HD Render';
+                freezeButton.style.background = '#00f';
+                canvas.style.cursor = 'grab';
+                quality = 2; // Back to medium
+                frame = 0;
+                hasConverged = false;
+            }
+        });
+
+        // Stats
+        let lastTime = performance.now();
+        let frameCount = 0;
+        let fps = 0;
+
+        function updateStats() {
+            const currentTime = performance.now();
+            frameCount++;
+            
+            if (currentTime - lastTime >= 1000) {
+                fps = frameCount;
+                frameCount = 0;
+                lastTime = currentTime;
+                
+                document.getElementById('fps').textContent = fps;
+            }
+            
+            const triangles = 54; // Approximate triangle count (including flowers)
+            const rays = canvas.width * canvas.height * quality;
+            const memory = (canvas.width * canvas.height * 4 * 2 / 1024 / 1024).toFixed(1);
+            const maxFrames = freezeMode ? FREEZE_MAX_FRAMES : MAX_ACCUMULATION_FRAMES;
+            const convergence = Math.min(100, Math.floor((frame / maxFrames) * 100));
+            
+            document.getElementById('rays').textContent = rays.toLocaleString();
+            document.getElementById('triangles').textContent = triangles;
+            document.getElementById('memory').textContent = memory;
+            document.getElementById('convergence').textContent = convergence;
+            document.getElementById('frame').textContent = Math.min(frame, maxFrames);
+            document.getElementById('maxframe').textContent = maxFrames;
+            
+            // Update status
+            const statusEl = document.getElementById('status');
+            if (freezeMode && frame < maxFrames) {
+                statusEl.innerHTML = 'Status: <span class="stat-value freeze-mode">HD RENDERING</span>';
+            } else if (hasConverged || frame >= maxFrames) {
+                statusEl.innerHTML = 'Status: <span class="stat-value converged">CONVERGED</span>';
+            } else {
+                statusEl.innerHTML = 'Status: <span class="stat-value">Rendering...</span>';
+            }
+        }
+
+        // Resize handler
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            frame = 0;
+            hasConverged = false;
+        }
+
+        window.addEventListener('resize', resize);
+        resize();
+
+        // Create framebuffers
+        let fb1 = createFramebuffer(canvas.width, canvas.height);
+        let fb2 = createFramebuffer(canvas.width, canvas.height);
+        let currentFB = fb1;
+        let previousFB = fb2;
+
+        // Animation loop
+        function render(time) {
+            // Apply time scaling based on freeze mode
+            if (freezeMode) {
+                time *= 0.0; // Stop all time-based animations
+            } else {
+                time *= 0.001; // Convert to seconds for normal operation
+            }
+            
+            // Check if we've reached convergence
+            const maxFrames = freezeMode ? FREEZE_MAX_FRAMES : MAX_ACCUMULATION_FRAMES;
+            if (frame >= maxFrames && !hasConverged) {
+                hasConverged = true;
+                console.log('Convergence reached at frame', frame);
+            }
+            
+            // Update camera
+            cameraPos[0] = Math.sin(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
+            cameraPos[1] = Math.sin(cameraAngleX) * cameraDistance + 1.5;
+            cameraPos[2] = Math.cos(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
+            
+            const cameraDir = [
+                cameraTarget[0] - cameraPos[0],
+                cameraTarget[1] - cameraPos[1],
+                cameraTarget[2] - cameraPos[2]
+            ];
+            const len = Math.sqrt(cameraDir[0]**2 + cameraDir[1]**2 + cameraDir[2]**2);
+            cameraDir[0] /= len;
+            cameraDir[1] /= len;
+            cameraDir[2] /= len;
+            
+            // Render to framebuffer
+            gl.bindFramebuffer(gl.FRAMEBUFFER, currentFB.framebuffer);
+            
+            // Use program
+            gl.useProgram(program);
+            
+            // Set uniforms
+            gl.uniform2f(resolutionLocation, canvas.width, canvas.height);
+            gl.uniform1f(timeLocation, time);
+            gl.uniform3fv(cameraPosLocation, cameraPos);
+            gl.uniform3fv(cameraDirLocation, cameraDir);
+            gl.uniform3f(cameraUpLocation, 0, 1, 0);
+            gl.uniform1f(frameLocation, Math.min(frame, maxFrames));
+            gl.uniform1f(dofEnabledLocation, enableDOF ? 1.0 : 0.0);
+            gl.uniform1f(dispersionEnabledLocation, enableDispersion ? 1.0 : 0.0);
+            gl.uniform1f(qualityLocation, quality);
+            gl.uniform1f(convergedLocation, (hasConverged && !freezeMode) ? 1.0 : 0.0);
+            gl.uniform1f(exposureLocation, exposure);
+            gl.uniform1f(focusDistanceLocation, focusDistance);
+            gl.uniform1f(apertureLocation, aperture);
+            gl.uniform1f(freezeModeLocation, freezeMode ? 1.0 : 0.0);
+            gl.uniform1f(windowLightIntensityLocation, windowLightIntensity);
+            gl.uniform1f(maxFramesLocation, maxFrames);
+            gl.uniform1f(skipRayTracingLocation, (freezeMode && hasConverged) ? 1.0 : 0.0);
+            
+            // Bind previous frame texture
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, previousFB.texture);
+            gl.uniform1i(previousFrameLocation, 0);
+            
+            // Bind vertex buffer
+            gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+            gl.enableVertexAttribArray(positionLocation);
+            gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+            
+            // Draw
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            
+            // Copy to screen
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.bindTexture(gl.TEXTURE_2D, currentFB.texture);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            
+            // Only swap and increment if not converged or in freeze mode continuing to accumulate
+            if (!hasConverged || (freezeMode && frame < maxFrames)) {
+                // Swap framebuffers
+                const temp = currentFB;
+                currentFB = previousFB;
+                previousFB = temp;
+                frame++;
+            }
+            
+            updateStats();
+            
+            requestAnimationFrame(render);
+        }
+
+        render(0);
+    </script>
+</body>
+</html>

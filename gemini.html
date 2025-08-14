@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebGL Ray Traced Scene (Corrected Accumulation)</title>
+    <style>
+        body, html { margin: 0; padding: 0; overflow: hidden; background-color: #000; font-family: 'Consolas', 'Courier New', monospace; color: white; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        #ui-container { position: absolute; top: 10px; left: 10px; padding: 10px; background: rgba(0, 0, 0, 0.6); border-radius: 5px; border: 1px solid rgba(255, 255, 255, 0.2); font-size: 12px; line-height: 1.6; pointer-events: none; text-shadow: 1px 1px 2px black; }
+        #controls-container { position: absolute; bottom: 10px; left: 10px; padding: 10px; background: rgba(0, 0, 0, 0.6); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 5px; font-size: 14px; }
+        #controls-container label, #controls-container button { display: block; margin-bottom: 8px; }
+        #controls-container select, #controls-container input, #controls-container button { background: #333; color: white; border: 1px solid #555; border-radius: 3px; padding: 4px; width: 150px; box-sizing: border-box; }
+        #controls-container button { cursor: pointer; } #controls-container button:hover { background: #444; }
+        #controls-container fieldset:disabled { opacity: 0.5; }
+    </style>
+</head>
+<body>
+    <canvas id="glcanvas"></canvas>
+    <div id="ui-container">
+        <strong>Real-time Stats</strong><br>
+        FPS: <span id="fps">--</span><br>
+        Resolution: <span id="resolution">--</span><br>
+        Ray March Steps: <span id="ray-steps">--</span><br>
+        Ray Bounces: <span id="ray-bounces">--</span><br>
+        Progressive Samples: <span id="sample-count">1</span>
+    </div>
+    <div id="controls-container">
+        <button id="freeze-render-btn">Freeze & Render</button>
+        <fieldset id="interactive-controls">
+            <label for="quality-select">Quality Preset:</label>
+            <select id="quality-select">
+                <option value="low">Low (Fast)</option>
+                <option value="medium" selected>Medium</option>
+                <option value="high">High (Quality)</option>
+                <option value="ultra">Ultra (Cinematic)</option>
+            </select>
+            <label for="exposure-slider">Exposure:</label>
+            <input type="range" id="exposure-slider" min="0.1" max="3.0" step="0.05" value="1.2">
+            <label><input type="checkbox" id="toggle-dof" checked> Depth of Field</label>
+            <label><input type="checkbox" id="toggle-volumetric" checked> Volumetric Lighting</label>
+            <label><input type="checkbox" id="toggle-dispersion" checked> Chromatic Dispersion</label>
+        </fieldset>
+    </div>
+
+    <!-- Main Calculation Shader (Vertex) -->
+    <script id="main-vs" type="x-shader/x-vertex">
+        attribute vec2 a_position;
+        void main() { gl_Position = vec4(a_position, 0.0, 1.0); }
+    </script>
+
+    <!-- Main Calculation Shader (Fragment) -->
+    <script id="main-fs" type="x-shader/x-fragment">
+        precision highp float;
+        uniform vec2 u_resolution; uniform float u_time; uniform vec3 u_camera_pos; uniform vec3 u_camera_lookat;
+        uniform float u_sample_count; uniform sampler2D u_prev_frame;
+        uniform int u_quality; uniform bool u_dof; uniform bool u_volumetric; uniform bool u_dispersion;
+
+        const int MAX_MARCH_STEPS_LOW = 48; const int MAX_MARCH_STEPS_MED = 72; const int MAX_MARCH_STEPS_HIGH = 128; const int MAX_MARCH_STEPS_ULTRA = 256;
+        const int MAX_BOUNCES_LOW = 2; const int MAX_BOUNCES_MED = 3; const int MAX_BOUNCES_HIGH = 4; const int MAX_BOUNCES_ULTRA = 5;
+        const float MIN_DIST = 0.001; const float MAX_DIST = 100.0;
+        #define MAT_WALL 1.0
+        #define MAT_TABLE 2.0
+        #define MAT_WINDOW_FRAME 3.0
+        #define MAT_GLASS_VASE 4.0
+        #define MAT_CRYSTAL_BALL 5.0
+        #define MAT_CANDLE_WAX 6.0
+        #define MAT_CANDLE_FLAME 7.0
+        #define MAT_MAGNIFYING_GLASS 8.0
+        #define MAT_MAG_HANDLE 9.0
+        #define MAT_FLOWERS 10.0
+        #define MAT_WINDOW_PANE_1 11.0
+        #define MAT_WINDOW_PANE_2 12.0
+        #define MAT_WINDOW_PANE_3 13.0
+        #define MAT_WINDOW_PANE_4 14.0
+
+        struct Ray { vec3 origin; vec3 direction; };
+        struct Material { vec3 albedo; float roughness; float metallic; float ior; float transmission; vec3 emission; };
+        struct Hit { float dist; Material material; vec3 normal; vec3 pos; float id; };
+
+        float hash11(float p) { return fract(sin(p * 753.5453) * 43758.5453); }
+        vec2 hash21(float p) { return fract(sin(vec2(p * 5.3983, p * 5.4427)) * 43758.5453); }
+        vec3 hash31(float p) { return fract(sin(vec3(p*12.9898, p*78.233, p*45.543)) * 43758.5453); }
+        float noise(vec3 x) { vec3 p = floor(x); vec3 f = fract(x); f = f * f * (3.0 - 2.0 * f); float n = p.x + p.y * 57.0 + 113.0 * p.z; return mix(mix(mix(hash11(n + 0.0), hash11(n + 1.0), f.x), mix(hash11(n + 57.0), hash11(n + 58.0), f.x), f.y), mix(mix(hash11(n + 113.0), hash11(n + 114.0), f.x), mix(hash11(n + 170.0), hash11(n + 171.0), f.x), f.y), f.z); }
+        float fbm(vec3 p) { float f = 0.0; mat3 m = mat3(0.00, 0.80, 0.60, -0.80, 0.36, -0.48, -0.60, -0.48, 0.64); f += 0.5000 * noise(p); p = m * p * 2.02; f += 0.2500 * noise(p); p = m * p * 2.03; f += 0.1250 * noise(p); return f / 0.875; }
+        float sdSphere(vec3 p, float s) { return length(p) - s; }
+        float sdBox(vec3 p, vec3 b) { vec3 q = abs(p) - b; return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0); }
+        float sdCylinder(vec3 p, float h, float r) { vec2 d = abs(vec2(length(p.xz), p.y)) - vec2(r, h); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)); }
+        float sdPlane(vec3 p, vec4 n) { return dot(p, n.xyz) + n.w; }
+        float sdCapsule( vec3 p, vec3 a, vec3 b, float r ) { vec3 pa = p - a, ba = b - a; float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 ); return length( pa - ba*h ) - r; }
+        vec2 opU(vec2 d1, vec2 d2) { return (d1.x < d2.x) ? d1 : d2; }
+        vec2 map(vec3 p) {
+            vec2 res = vec2(MAX_DIST, 0.0);
+            res = opU(res, vec2(sdPlane(p, vec4(0,1,0,0)), MAT_WALL)); res = opU(res, vec2(sdPlane(p, vec4(0,0,1,5)), MAT_WALL)); res = opU(res, vec2(sdPlane(p, vec4(1,0,0,5)), MAT_WALL)); res = opU(res, vec2(sdPlane(p, vec4(-1,0,0,5)), MAT_WALL));
+            vec3 window_pos = vec3(0, 1.5, -4.99); vec3 window_p = p - window_pos; res.x = max(res.x, -sdBox(window_p, vec3(1.5, 1.0, 0.2)));
+            res = opU(res, vec2(sdBox(window_p, vec3(0.05, 1.05, 0.1)), MAT_WINDOW_FRAME)); res = opU(res, vec2(sdBox(window_p, vec3(1.55, 0.05, 0.1)), MAT_WINDOW_FRAME));
+            res = opU(res, vec2(sdBox(p - (window_pos + vec3(-0.775, 0.5, 0)), vec3(0.7, 0.45, 0.02)), MAT_WINDOW_PANE_1)); res = opU(res, vec2(sdBox(p - (window_pos + vec3(0.775, 0.5, 0)), vec3(0.7, 0.45, 0.02)), MAT_WINDOW_PANE_2));
+            res = opU(res, vec2(sdBox(p - (window_pos + vec3(-0.775, -0.5, 0)), vec3(0.7, 0.45, 0.02)), MAT_WINDOW_PANE_3)); res = opU(res, vec2(sdBox(p - (window_pos + vec3(0.775, -0.5, 0)), vec3(0.7, 0.45, 0.02)), MAT_WINDOW_PANE_4));
+            res = opU(res, vec2(sdBox(p - vec3(0, 0.1, 0), vec3(2.5, 0.1, 1.5)), MAT_TABLE));
+            vec3 candle_pos = vec3(1.0, 0.2, 0.5); res = opU(res, vec2(sdCylinder(p - candle_pos, 0.4, 0.15), MAT_CANDLE_WAX));
+            float flame_flicker = noise(vec3(p.xy*2.0, u_time*2.0)) * 0.05; res = opU(res, vec2(sdSphere(p - (candle_pos + vec3(0.0, 0.45 + flame_flicker, 0.0)), 0.08 + flame_flicker), MAT_CANDLE_FLAME));
+            res = opU(res, vec2(sdSphere(p - vec3(-0.8, 0.4, 0.2), 0.3), MAT_CRYSTAL_BALL));
+            vec3 vase_pos = vec3(0.2, 0.1, -0.8); vec3 vase_p = p - vase_pos; float vase_shape = length(vec2(length(vase_p.xz) - (0.2 + 0.1*sin(vase_p.y*5.0)), vase_p.y - 0.5)) - 0.05; float vase_hollow = length(vec2(length(vase_p.xz) - (0.17 + 0.1*sin(vase_p.y*5.0)), vase_p.y - 0.5)) - 0.02; res = opU(res, vec2(max(vase_shape, -vase_hollow), MAT_GLASS_VASE));
+            vec3 flower_pos = vase_pos + vec3(0, 0.5, 0); res = opU(res, vec2(sdCapsule(p, flower_pos, flower_pos + vec3(0.1, 0.8, 0.05), 0.01), MAT_FLOWERS)); res = opU(res, vec2(sdCapsule(p, flower_pos, flower_pos + vec3(-0.05, 0.7, -0.1), 0.01), MAT_FLOWERS)); res = opU(res, vec2(sdCapsule(p, flower_pos, flower_pos + vec3(0.0, 0.9, 0.0), 0.01), MAT_FLOWERS));
+            vec3 mag_pos = vec3(-0.2, 0.22, 0.8); vec3 mag_p = p - mag_pos; mag_p.x = abs(mag_p.x); float lens_d = 0.02, lens_r = 0.3; float lens = max(sdSphere(mag_p - vec3(0, 0, -sqrt(lens_r*lens_r - lens_d*lens_d)), lens_r), sdSphere(mag_p - vec3(0, 0, sqrt(lens_r*lens_r - lens_d*lens_d)), lens_r));
+            res = opU(res, vec2(max(lens, -sdCylinder(mag_p, 0.2, 0.02)), MAT_MAGNIFYING_GLASS)); res = opU(res, vec2(sdCapsule(p, mag_pos + vec3(0,0,0.2), mag_pos + vec3(0,0,0.8), 0.04), MAT_MAG_HANDLE));
+            return res;
+        }
+        Material getMaterial(float id, vec3 p) {
+            Material m; m.albedo = vec3(0.8); m.roughness = 0.8; m.metallic = 0.0; m.ior = 1.5; m.transmission = 0.0; m.emission = vec3(0.0);
+            if (id == MAT_WALL) { m.albedo = vec3(0.2, 0.18, 0.15) * (1.0 + fbm(p*5.0)*0.2); m.roughness = 0.9; }
+            else if (id == MAT_TABLE) { float grain = sin(p.x * 20.0 + fbm(p*2.0) * 20.0) * 0.5 + 0.5; m.albedo = mix(vec3(0.2, 0.1, 0.05), vec3(0.4, 0.25, 0.15), grain); m.roughness = 0.1 + fbm(p*10.0)*0.1; }
+            else if (id == MAT_WINDOW_FRAME) { m.albedo = vec3(0.1); m.roughness = 0.7; }
+            else if (id == MAT_GLASS_VASE) { m.albedo = vec3(0.8, 0.9, 1.0); m.roughness = 0.05; m.transmission = 1.0; m.ior = 1.45; }
+            else if (id == MAT_CRYSTAL_BALL) { m.albedo = vec3(1.0); m.roughness = 0.0; m.transmission = 1.0; m.ior = 2.0; }
+            else if (id == MAT_CANDLE_WAX) { m.albedo = vec3(0.9, 0.85, 0.7); m.roughness = 0.4; }
+            else if (id == MAT_CANDLE_FLAME) { m.emission = vec3(5.0, 2.5, 1.0) * (1.0 - length(p - (vec3(1.0, 0.65, 0.5)))*2.0); }
+            else if (id == MAT_MAGNIFYING_GLASS) { m.albedo = vec3(1.0); m.roughness = 0.0; m.transmission = 1.0; m.ior = 1.6; }
+            else if (id == MAT_MAG_HANDLE) { m.albedo = vec3(0.8, 0.5, 0.2); m.roughness = 0.4; }
+            else if (id == MAT_FLOWERS) { m.albedo = vec3(0.4, 0.3, 0.1) * (0.8 + hash11(floor(p.y*20.0))*0.4); m.roughness = 0.9; }
+            else if (id == MAT_WINDOW_PANE_1) { m.albedo = vec3(1.0, 0.2, 0.2); m.roughness = 0.2; m.transmission = 0.8; m.ior = 1.5; m.emission = m.albedo * 3.0; }
+            else if (id == MAT_WINDOW_PANE_2) { m.albedo = vec3(0.2, 0.3, 1.0); m.roughness = 0.2; m.transmission = 0.8; m.ior = 1.5; m.emission = m.albedo * 3.0; }
+            else if (id == MAT_WINDOW_PANE_3) { m.albedo = vec3(0.2, 1.0, 0.3); m.roughness = 0.2; m.transmission = 0.8; m.ior = 1.5; m.emission = m.albedo * 3.0; }
+            else if (id == MAT_WINDOW_PANE_4) { m.albedo = vec3(1.0, 0.9, 0.2); m.roughness = 0.2; m.transmission = 0.8; m.ior = 1.5; m.emission = m.albedo * 3.0; }
+            return m;
+        }
+        vec3 getNormal(vec3 p) { vec2 e = vec2(0.001, 0.0); return normalize(vec3(map(p + e.xyy).x - map(p - e.xyy).x, map(p + e.yxy).x - map(p - e.yxy).x, map(p + e.yyx).x - map(p - e.yyx).x)); }
+        Hit march(Ray r) { float t = 0.0; vec2 res; int MAX_STEPS = u_quality == 0 ? MAX_MARCH_STEPS_LOW : u_quality == 1 ? MAX_MARCH_STEPS_MED : u_quality == 2 ? MAX_MARCH_STEPS_HIGH : MAX_MARCH_STEPS_ULTRA; for (int i = 0; i < MAX_MARCH_STEPS_ULTRA; i++) { if (i >= MAX_STEPS) break; vec3 p = r.origin + r.direction * t; res = map(p); t += res.x; if (res.x < MIN_DIST || t > MAX_DIST) break; } Hit hit; hit.dist = t; hit.id = res.y; hit.pos = r.origin + r.direction * t; hit.normal = getNormal(hit.pos); hit.material = getMaterial(hit.id, hit.pos); if (t > MAX_DIST) hit.id = 0.0; return hit; }
+        vec3 traceSimple(Ray r) { Hit hit = march(r); if (hit.id == 0.0) return vec3(0.0); return hit.material.emission + hit.material.albedo * 0.2; }
+        float getShadow(vec3 p, vec3 ld, float max_dist) { float res = 1.0, t = 0.01; for(int i=0; i<32; i++){ if(t > max_dist) break; float h = map(p + ld * t).x; if(h < MIN_DIST) return 0.0; res = min(res, 8.0 * h / t); t += h; } return clamp(res, 0.0, 1.0); }
+        float fresnel(float cosi, float ior) { float ior1 = 1.0, ior2 = ior; if (cosi < 0.0) { float tmp = ior1; ior1 = ior2; ior2 = tmp; } float sint = ior1/ior2 * sqrt(max(0.0, 1.0 - cosi*cosi)); if (sint >= 1.0) return 1.0; float cost = sqrt(max(0.0, 1.0 - sint*sint)); cosi = abs(cosi); float Rs = ((ior2 * cosi) - (ior1 * cost)) / ((ior2 * cosi) + (ior1 * cost)); float Rp = ((ior1 * cosi) - (ior2 * cost)) / ((ior1 * cosi) + (ior2 * cost)); return (Rs * Rs + Rp * Rp) / 2.0; }
+        vec3 render(Ray r) {
+            vec3 final_color = vec3(0.0), throughput = vec3(1.0); int MAX_BOUNCES = u_quality == 0 ? MAX_BOUNCES_LOW : u_quality == 1 ? MAX_BOUNCES_MED : u_quality == 2 ? MAX_BOUNCES_HIGH : MAX_BOUNCES_ULTRA;
+            for (int i = 0; i < MAX_BOUNCES_ULTRA; i++) {
+                if (i >= MAX_BOUNCES) break; Hit hit = march(r); if (hit.id == 0.0) break;
+                Material mat = hit.material; vec3 n = hit.normal; vec3 v = -r.direction; vec3 p = hit.pos; final_color += mat.emission * throughput;
+                vec3 candle_light_pos = vec3(1.0, 0.7, 0.5); vec3 to_candle = candle_light_pos - p; float dist_to_candle = length(to_candle); vec3 l_candle = normalize(to_candle);
+                float shadow_candle = getShadow(p + n * MIN_DIST * 2.0, l_candle, dist_to_candle);
+                final_color += mat.albedo * (vec3(1.0, 0.6, 0.3) * 5.0 / (dist_to_candle * dist_to_candle)) * max(0.0, dot(n, l_candle)) * shadow_candle * throughput * (1.0 - mat.metallic);
+                throughput *= mat.albedo; float F = fresnel(dot(v, n), mat.ior);
+                if (mat.transmission > 0.0) {
+                    if (u_dispersion && i < MAX_BOUNCES - 1) { vec3 refr_r = refract(r.direction, n, 1.0 / (mat.ior + 0.02)), refr_g = refract(r.direction, n, 1.0 / (mat.ior)), refr_b = refract(r.direction, n, 1.0 / (mat.ior - 0.02)); vec3 color_r = traceSimple(Ray(p - n * MIN_DIST, refr_r)), color_g = traceSimple(Ray(p - n * MIN_DIST, refr_g)), color_b = traceSimple(Ray(p - n * MIN_DIST, refr_b)); final_color += throughput * (1.0 - F) * vec3(color_r.r, color_g.g, color_b.b); }
+                    else { vec3 refr_dir = refract(r.direction, n, 1.0/mat.ior); if (dot(refr_dir, refr_dir) == 0.0 || hash11(p.x+p.y+u_sample_count) < F) r = Ray(p + n * MIN_DIST, reflect(r.direction, n)); else r = Ray(p - n * MIN_DIST, refr_dir); continue; }
+                }
+                r = Ray(p + n * MIN_DIST, normalize(reflect(r.direction, n) + (hash31(p.x+p.y+p.z+u_time+u_sample_count)-0.5) * mat.roughness));
+                if (dot(throughput, throughput) < 0.01) break;
+            } return final_color;
+        }
+        void main() {
+            vec2 uv = (gl_FragCoord.xy - 0.5 * u_resolution.xy) / u_resolution.y;
+            vec3 cam_dir = normalize(u_camera_lookat - u_camera_pos); vec3 cam_right = normalize(cross(vec3(0,1,0), cam_dir)); vec3 cam_up = cross(cam_dir, cam_right);
+            vec3 ray_dir = normalize(uv.x * cam_right + uv.y * cam_up + 1.5 * cam_dir);
+            if (u_dof) { float focal_dist = length(u_camera_lookat - u_camera_pos); float aperture = 0.02; vec2 lens_uv = (hash21(gl_FragCoord.x * gl_FragCoord.y + u_time + u_sample_count) * 2.0 - 1.0); vec3 focal_point = u_camera_pos + ray_dir * focal_dist; vec3 ray_origin = u_camera_pos + cam_right * lens_uv.x * aperture + cam_up * lens_uv.y * aperture; ray_dir = normalize(focal_point - ray_origin); }
+            
+            vec3 raw_color = render(Ray(u_camera_pos, ray_dir));
+
+            if (u_volumetric) { float fog_density = 0.15; Hit hit = march(Ray(u_camera_pos, ray_dir)); float dist = hit.dist; float fog_amount = exp(-dist * fog_density); vec3 candle_light_pos = vec3(1.0, 0.7, 0.5); float candle_shaft = 0.0; float t = hash11(uv.x+uv.y) * 0.5; for(int i=0; i<16; i++) { if(t > dist) break; vec3 p = u_camera_pos + ray_dir * t; vec3 to_light = candle_light_pos - p; float light_dist = length(to_light); float shadow = getShadow(p, normalize(to_light), light_dist); candle_shaft += shadow * (1.0 - t/dist) * (1.0 / (1.0 + light_dist*light_dist)); t += 0.2; } raw_color = mix(vec3(1.0, 0.7, 0.4) * candle_shaft * 0.1, raw_color, fog_amount); }
+            
+            // --- FIX: Accumulate RAW color, not tonemapped color ---
+            vec3 accumulated_color = raw_color;
+            if (u_sample_count > 1.0) {
+                vec3 prev_color = texture2D(u_prev_frame, gl_FragCoord.xy / u_resolution).rgb;
+                accumulated_color = mix(prev_color, raw_color, 1.0 / u_sample_count);
+            }
+            gl_FragColor = vec4(accumulated_color, 1.0);
+        }
+    </script>
+    
+    <!-- Display Shader (Vertex) -->
+    <script id="quad-vs" type="x-shader/x-vertex">
+        attribute vec2 a_position; varying vec2 v_uv;
+        void main() { v_uv = a_position * 0.5 + 0.5; gl_Position = vec4(a_position, 0.0, 1.0); }
+    </script>
+    
+    <!-- Display Shader (Fragment) -->
+    <script id="quad-fs" type="x-shader/x-fragment">
+        precision highp float;
+        uniform sampler2D u_texture;
+        uniform float u_exposure;
+        varying vec2 v_uv;
+        void main() {
+            // --- FIX: Post-processing is now done here, in the final step ---
+            vec3 raw_color = texture2D(u_texture, v_uv).rgb;
+            
+            // Apply exposure
+            vec3 exposed_color = raw_color * u_exposure;
+
+            // Apply bloom & Reinhard tonemapping
+            vec3 bloom = max(vec3(0.0), exposed_color - 1.0);
+            vec3 tonemapped_color = (exposed_color + bloom * 0.5) / (exposed_color + bloom * 0.5 + vec3(1.0));
+            
+            // Gamma correction
+            gl_FragColor = vec4(pow(tonemapped_color, vec3(1.0/2.2)), 1.0);
+        }
+    </script>
+
+    <script>
+        let isFrozen = false, sampleCount = 0, frozenTime = 0;
+        let readFBO, writeFBO, readTex, writeTex;
+
+        const canvas = document.getElementById('glcanvas');
+        const gl = canvas.getContext('webgl', { antialias: false, powerPreference: "high-performance" });
+        if (!gl.getExtension('OES_texture_float')) alert('Floating point textures not supported!');
+
+        const freezeBtn = document.getElementById('freeze-render-btn'), interactiveControls = document.getElementById('interactive-controls');
+        const qualitySelect = document.getElementById('quality-select'), exposureSlider = document.getElementById('exposure-slider');
+        const dofToggle = document.getElementById('toggle-dof'), volumetricToggle = document.getElementById('toggle-volumetric'), dispersionToggle = document.getElementById('toggle-dispersion');
+        const fpsSpan = document.getElementById('fps'), resolutionSpan = document.getElementById('resolution'), rayStepsSpan = document.getElementById('ray-steps');
+        const rayBouncesSpan = document.getElementById('ray-bounces'), sampleCountSpan = document.getElementById('sample-count');
+
+        function createShader(gl, type, source) { const shader = gl.createShader(type); gl.shaderSource(shader, source); gl.compileShader(shader); if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) { console.error('Shader compile error: ' + gl.getShaderInfoLog(shader)); gl.deleteShader(shader); return null; } return shader; }
+        function createProgram(gl, vs, fs) { const program = gl.createProgram(); gl.attachShader(program, vs); gl.attachShader(program, fs); gl.linkProgram(program); if (!gl.getProgramParameter(program, gl.LINK_STATUS)) { console.error('Program link error: ' + gl.getProgramInfoLog(program)); return null; } return program; }
+
+        const mainProgram = createProgram(gl, createShader(gl, gl.VERTEX_SHADER, document.getElementById('main-vs').textContent), createShader(gl, gl.FRAGMENT_SHADER, document.getElementById('main-fs').textContent));
+        const quadProgram = createProgram(gl, createShader(gl, gl.VERTEX_SHADER, document.getElementById('quad-vs').textContent), createShader(gl, gl.FRAGMENT_SHADER, document.getElementById('quad-fs').textContent));
+        if (!mainProgram || !quadProgram) { document.body.innerHTML = '<div style="color:white; padding: 20px;">Shader Error. Check console.</div>'; throw "Shader error"; }
+
+        const mainUniforms = { resolution: gl.getUniformLocation(mainProgram, "u_resolution"), time: gl.getUniformLocation(mainProgram, "u_time"), cameraPos: gl.getUniformLocation(mainProgram, "u_camera_pos"), cameraLookAt: gl.getUniformLocation(mainProgram, "u_camera_lookat"), quality: gl.getUniformLocation(mainProgram, "u_quality"), dof: gl.getUniformLocation(mainProgram, "u_dof"), volumetric: gl.getUniformLocation(mainProgram, "u_volumetric"), dispersion: gl.getUniformLocation(mainProgram, "u_dispersion"), sampleCount: gl.getUniformLocation(mainProgram, "u_sample_count"), prevFrame: gl.getUniformLocation(mainProgram, "u_prev_frame") };
+        const mainPosAttrLoc = gl.getAttribLocation(mainProgram, "a_position");
+        const quadUniforms = { texture: gl.getUniformLocation(quadProgram, "u_texture"), exposure: gl.getUniformLocation(quadProgram, "u_exposure") };
+        const quadPosAttrLoc = gl.getAttribLocation(quadProgram, "a_position");
+
+        const positionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+
+        function createFramebuffer(width, height) {
+            const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.FLOAT, null);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            const fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null); return { fbo, tex };
+        }
+
+        function resizeFramebuffers(width, height) {
+            if (readFBO) { gl.deleteFramebuffer(readFBO); gl.deleteTexture(readTex); }
+            if (writeFBO) { gl.deleteFramebuffer(writeFBO); gl.deleteTexture(writeTex); }
+            const fbo1 = createFramebuffer(width, height); const fbo2 = createFramebuffer(width, height);
+            readFBO = fbo1.fbo; readTex = fbo1.tex; writeFBO = fbo2.fbo; writeTex = fbo2.tex;
+        }
+
+        let lastFPSTime = 0, frameCount = 0;
+        let camera = { angle: 2.5, radius: 5.5, height: 1.5, lookAt: { x: 0, y: 1, z: 0 } };
+
+        function resetProgressiveRender() { if (isFrozen) return; sampleCount = 0; sampleCountSpan.textContent = 1; }
+        
+        freezeBtn.addEventListener('click', () => { isFrozen = !isFrozen; freezeBtn.textContent = isFrozen ? 'Unfreeze' : 'Freeze & Render'; interactiveControls.disabled = isFrozen; resetProgressiveRender(); });
+        interactiveControls.addEventListener('change', resetProgressiveRender);
+        let isMouseDown = false; let lastMouseX = null;
+        canvas.addEventListener('mousedown', (e) => { isMouseDown = true; lastMouseX = e.clientX; resetProgressiveRender(); });
+        canvas.addEventListener('mouseup', () => { isMouseDown = false; }); canvas.addEventListener('mouseleave', () => { isMouseDown = false; });
+        canvas.addEventListener('mousemove', (e) => { if (!isMouseDown) return; camera.angle -= (e.clientX - lastMouseX) * 0.005; lastMouseX = e.clientX; resetProgressiveRender(); });
+        canvas.addEventListener('wheel', (e) => { e.preventDefault(); camera.radius = Math.max(2.0, Math.min(10.0, camera.radius + e.deltaY * 0.01)); resetProgressiveRender(); });
+
+        function render(time) {
+            time *= 0.001;
+            if (time - lastFPSTime >= 1.0) { fpsSpan.textContent = frameCount; frameCount = 0; lastFPSTime = time; }
+            frameCount++;
+
+            const width = gl.canvas.clientWidth, height = gl.canvas.clientHeight;
+            if (canvas.width !== width || canvas.height !== height) {
+                canvas.width = width; canvas.height = height; resolutionSpan.textContent = `${width}x${height}`; resizeFramebuffers(width, height); resetProgressiveRender();
+            }
+            
+            gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+
+            if (!isFrozen) { frozenTime = time; sampleCount = 0; }
+            sampleCount++; sampleCountSpan.textContent = sampleCount;
+            
+            // --- Pass 1: Calculate one new frame and accumulate with previous data ---
+            gl.useProgram(mainProgram);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, writeFBO);
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.vertexAttribPointer(mainPosAttrLoc, 2, gl.FLOAT, false, 0, 0); gl.enableVertexAttribArray(mainPosAttrLoc);
+            
+            gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, readTex);
+            gl.uniform1i(mainUniforms.prevFrame, 0);
+            gl.uniform1f(mainUniforms.sampleCount, sampleCount);
+            
+            gl.uniform2f(mainUniforms.resolution, gl.canvas.width, gl.canvas.height); gl.uniform1f(mainUniforms.time, frozenTime);
+            gl.uniform3f(mainUniforms.cameraPos, Math.sin(camera.angle) * camera.radius, camera.height, Math.cos(camera.angle) * camera.radius);
+            gl.uniform3f(mainUniforms.cameraLookAt, camera.lookAt.x, camera.lookAt.y, camera.lookAt.z);
+            gl.uniform1i(mainUniforms.dof, dofToggle.checked); gl.uniform1i(mainUniforms.volumetric, volumetricToggle.checked); gl.uniform1i(mainUniforms.dispersion, dispersionToggle.checked);
+            
+            const qualityMap = { 'low': 0, 'medium': 1, 'high': 2, 'ultra': 3 }; const qualityLevels = [{s:'48',b:'2'},{s:'72',b:'3'},{s:'128',b:'4'},{s:'256',b:'5'}];
+            const currentQuality = isFrozen ? 3 : qualityMap[qualitySelect.value]; gl.uniform1i(mainUniforms.quality, currentQuality);
+            rayStepsSpan.textContent = qualityLevels[currentQuality].s; rayBouncesSpan.textContent = qualityLevels[currentQuality].b;
+
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+            // --- Pass 2: Draw the accumulated result to the screen with post-processing ---
+            gl.useProgram(quadProgram);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.vertexAttribPointer(quadPosAttrLoc, 2, gl.FLOAT, false, 0, 0); gl.enableVertexAttribArray(quadPosAttrLoc);
+            
+            gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, writeTex);
+            gl.uniform1i(quadUniforms.texture, 0);
+            gl.uniform1f(quadUniforms.exposure, exposureSlider.value);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+            // Swap buffers for the next frame
+            [readFBO, writeFBO] = [writeFBO, readFBO]; [readTex, writeTex] = [writeTex, readTex];
+
+            requestAnimationFrame(render);
+        }
+
+        resizeFramebuffers(gl.canvas.clientWidth || 1, gl.canvas.clientHeight || 1);
+        requestAnimationFrame(render);
+    </script>
+</body>
+</html>

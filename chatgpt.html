@@ -1,0 +1,1014 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Candlelit Still Life — WebGL Ray Tracing</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <style>
+    html, body {
+      margin: 0; padding: 0;
+      height: 100%;
+      background: #0b0b0d;
+      color: #e6e6ea;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans";
+      overflow: hidden;
+    }
+    #glcanvas { width: 100vw; height: 100vh; display: block; background: #0b0b0d; }
+    #overlay {
+      position: fixed; top: 10px; left: 10px; right: 10px;
+      display: grid; grid-template-columns: 1fr 1fr; gap: 12px; pointer-events: none;
+    }
+    .panel {
+      background: rgba(15, 15, 20, 0.78);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px; padding: 10px 12px; pointer-events: auto; backdrop-filter: blur(6px);
+    }
+    .panel h3 { margin: 0 0 6px 0; font-weight: 600; font-size: 14px; color: #cbd5e1; }
+    .row { display: grid; grid-template-columns: 160px 1fr; align-items: center; gap: 8px; margin: 4px 0; font-size: 12px; color: #cbd5e1; }
+    .value { font-variant-numeric: tabular-nums; color: #f1f5f9; }
+    .controls { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 8px 16px; font-size: 12px; }
+    .control { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .control label { min-width: 140px; color: #cbd5e1; }
+    select, input[type="checkbox"], input[type="range"], button { accent-color: #60a5fa; }
+    select, button {
+      background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 6px 8px; font-size: 12px;
+    }
+    input[type="range"] { width: 140px; }
+    .bar { width: 100%; height: 6px; background: #0f172a; border-radius: 6px; overflow: hidden; border: 1px solid #1f2937; }
+    .bar > span { display: block; height: 100%; background: linear-gradient(90deg, #60a5fa, #34d399); }
+    .muted { opacity: 0.8; }
+    .footer { font-size: 11px; color: #9ca3af; margin-top: 6px; display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+    .toggles { display: flex; flex-wrap: wrap; gap: 10px 16px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid #334155; background: rgba(2,6,23,0.6); font-size: 11px; color: #cbd5e1; }
+    .small { font-size: 11px; color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <canvas id="glcanvas"></canvas>
+
+  <div id="overlay">
+    <div class="panel">
+      <h3>Real-time Statistics</h3>
+      <div class="row"><div>Mode</div><div class="value" id="stat-mode">Interactive</div></div>
+      <div class="row"><div>FPS</div><div class="value" id="stat-fps">0</div></div>
+      <div class="row"><div>Convergence</div><div class="value" id="stat-conv">0%</div></div>
+      <div class="row"><div>Rays / frame</div><div class="value" id="stat-rays">0</div></div>
+      <div class="row"><div>Rays / second</div><div class="value" id="stat-rps">0</div></div>
+      <div class="row"><div>Triangles / faces</div><div class="value" id="stat-tri">2</div></div>
+      <div class="row"><div>Geometry LOD</div><div class="value" id="stat-lod">Auto</div></div>
+      <div class="row"><div>VRAM textures</div><div class="value" id="stat-texmem">0 MB</div></div>
+      <div class="row"><div>VRAM geometry</div><div class="value" id="stat-geommem">0.0 MB</div></div>
+      <div class="row"><div>Accel. structures</div><div class="value" id="stat-accelmem">0.0 MB</div></div>
+      <div class="row"><div>Total GPU memory</div><div class="value" id="stat-tmem">0 MB</div></div>
+      <div class="bar"><span id="bar-conv" style="width:0%"></span></div>
+      <div class="footer">
+        <span class="badge" id="badge-tech">Path tracing + Volumetrics</span>
+        <span class="small">First meaningful frame: <span id="stat-fmf">—</span></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Controls</h3>
+      <div class="controls">
+        <div class="control">
+          <label for="preset">Quality preset</label>
+          <select id="preset">
+            <option value="low">Low (fastest)</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+            <option value="ultra">Ultra</option>
+          </select>
+        </div>
+        <div class="control">
+          <label for="resScale">Resolution scale</label>
+          <input id="resScale" type="range" min="0.4" max="1.0" step="0.05" value="0.7"/>
+          <span class="small" id="resScaleLabel">70%</span>
+        </div>
+        <div class="control">
+          <label>Toggle effects</label>
+          <div class="toggles">
+            <label><input type="checkbox" id="fxFog" checked/> Volumetric fog</label>
+            <label><input type="checkbox" id="fxDispersion" checked/> Dispersion</label>
+            <label><input type="checkbox" id="fxCaustics" checked/> Caustics</label>
+            <label><input type="checkbox" id="fxDOF" checked/> Depth of field</label>
+            <label><input type="checkbox" id="fxBloom" checked/> Bloom</label>
+            <label><input type="checkbox" id="fxChromAb" checked/> Chromatic aberration</label>
+            <label><input type="checkbox" id="fxWoodBlur" checked/> Blurred wood reflection</label>
+          </div>
+        </div>
+        <div class="control">
+          <label for="maxBounces">Max bounces</label>
+          <input id="maxBounces" type="range" min="1" max="8" step="1" value="5"/>
+          <span class="small" id="maxBouncesLabel">5</span>
+        </div>
+        <div class="control">
+          <label for="spp">Samples/frame</label>
+          <input id="spp" type="range" min="1" max="8" step="1" value="2"/>
+          <span class="small" id="sppLabel">2</span>
+        </div>
+        <div class="control">
+          <label for="fogSteps">Fog steps</label>
+          <input id="fogSteps" type="range" min="8" max="64" step="1" value="24"/>
+          <span class="small" id="fogStepsLabel">24</span>
+        </div>
+        <div class="control">
+          <label for="fogDensity">Fog density</label>
+          <input id="fogDensity" type="range" min="0" max="1" step="0.01" value="0.28"/>
+          <span class="small" id="fogDensityLabel">0.28</span>
+        </div>
+        <div class="control">
+          <label>View</label>
+          <button id="flipBtn" title="Flip view 180° to correct upside-down screens">Flip view 180°</button>
+        </div>
+        <div class="control">
+          <label>Accumulation</label>
+          <button id="resetBtn" title="Reset accumulation">Reset</button>
+          <button id="freezeBtn" class="success" title="Freeze time and render at max quality">Freeze (max quality)</button>
+          <button id="resumeBtn" class="danger" title="Return to interactive mode" disabled>Resume</button>
+        </div>
+        <div class="control">
+          <label for="help">Camera</label>
+          <div class="small muted">Orbit: Left drag • Pan: Right drag / Shift+Drag • Zoom: Wheel</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Vertex shader -->
+  <script id="vs" type="x-shader/x-vertex">#version 300 es
+  precision highp float;
+  layout(location=0) in vec2 aPos;
+  out vec2 vUv;
+  void main() {
+    vUv = aPos*0.5 + 0.5;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+  }
+  </script>
+
+  <!-- Path tracing + scene shader -->
+  <script id="fsPathTracer" type="x-shader/x-fragment">#version 300 es
+  precision highp float;
+  precision highp sampler2D;
+
+  in vec2 vUv;
+  out vec4 fragColor;
+
+  uniform sampler2D uAccum;
+  uniform int uFrame;
+  uniform int uSPP;
+  uniform vec2 uResolution;
+  uniform float uTime;
+
+  uniform vec3 uCamPos;
+  uniform mat3 uCamBasis;
+  uniform float uFovY;
+  uniform float uAperture;
+  uniform float uFocusDist;
+  uniform bool uEnableDOF;
+  uniform bool uFlipView;
+
+  uniform int uMaxBounces;
+  uniform bool uEnableFog;
+  uniform bool uEnableDispersion;
+  uniform bool uEnableCaustics;
+  uniform bool uEnableChromAb;
+  uniform bool uEnableWoodBlur;
+  uniform int uFogSteps;
+  uniform float uFogDensity;
+
+  uniform vec3 uCandlePos;
+  uniform float uCandleFlicker;
+  uniform vec3 uWindowCenter;
+  uniform vec3 uWindowU;
+  uniform vec3 uWindowV;
+  uniform vec2 uWindowSize;
+  uniform float uRoomDepth;
+
+  uniform sampler2D uNewspaper;
+  uniform vec2 uRndSeed;
+
+  uniform vec3 uVasePos;
+  uniform vec3 uCrystalPos;
+  uniform float uCrystalR;
+  uniform vec3 uLensPos;
+  uniform vec2 uLensSize;
+  uniform vec3 uLensDir;
+  uniform vec3 uLensRight;
+  uniform vec3 uLensUp;
+  uniform vec3 uPaperPos;
+  uniform vec2 uPaperSize;
+  uniform vec3 uPaperN;
+  uniform vec3 uCandleBase;
+  uniform float uCandleH;
+  uniform float uCandleR;
+
+  const int MAT_NONE=-1, MAT_TABLE=0, MAT_VASE_GLASS=1, MAT_CRYSTAL=2, MAT_PAPER=3, MAT_LENS_GLASS=4, MAT_METAL=5, MAT_WALL=6, MAT_WINDOW=7, MAT_CANDLE=8, MAT_CANDLE_FLAME=9, MAT_STEM=10;
+  const float PI=3.14159265359, TAU=6.28318530718, EPS=1e-4;
+
+  float rand(inout uvec2 state){ state=state*1664525u+1013904223u; uint v=state.x^(state.y<<13); v^=(v>>17); v^=(v<<5); return float(v)/float(0xffffffffu); }
+  vec2 rand2(inout uvec2 s){ return vec2(rand(s), rand(s)); }
+  vec3 rand3(inout uvec2 s){ return vec3(rand(s), rand(s), rand(s)); }
+
+  mat3 onb(vec3 n){
+    float s=sign(n.z+1.0);
+    float a=-1.0/(1.0+abs(n.z));
+    float b=n.x*n.y*a;
+    vec3 t=vec3(1.0+n.x*n.x*a, b, -s*n.x);
+    vec3 b3=vec3(b, 1.0+n.y*n.y*a, -s*n.y);
+    return mat3(normalize(t), normalize(b3), n);
+  }
+
+  float hash12(vec2 p){ vec3 p3=fract(vec3(p.xyx)*0.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
+  float noise(vec3 x){
+    vec3 p=floor(x), f=fract(x); f=f*f*(3.0-2.0*f);
+    float n=p.x+p.y*57.0+113.0*p.z;
+    float res=mix(mix(mix(hash12(vec2(n+0.0, n+1.0)), hash12(vec2(n+57.0, n+58.0)), f.x),
+                      mix(hash12(vec2(n+113.0, n+114.0)), hash12(vec2(n+170.0, n+171.0)), f.x), f.y),
+                  mix(mix(hash12(vec2(n+226.0, n+227.0)), hash12(vec2(n+283.0, n+284.0)), f.x),
+                      mix(hash12(vec2(n+339.0, n+340.0)), hash12(vec2(n+396.0, n+397.0)), f.x), f.y), f.z);
+    return res;
+  }
+  float fbm(vec3 p){ float s=0.0,a=0.5; for(int i=0;i<5;i++){ s+=a*noise(p); p*=2.02; a*=0.5; } return s; }
+
+  float sdPlane(vec3 p, vec3 n, float h){ return dot(p,n)-h; }
+  float sdSphere(vec3 p, float r){ return length(p)-r; }
+  float sdBox(vec3 p, vec3 b){ vec3 q=abs(p)-b; return length(max(q,0.0))+min(max(q.x,max(q.y,q.z)),0.0); }
+  float sdCappedCylinder(vec3 p, float r, float h){ vec2 d=abs(vec2(length(p.xz), p.y))-vec2(r,h); return min(max(d.x,d.y),0.0)+length(max(d,0.0)); }
+  float sdCone(vec3 p, float h, float r1, float r2){
+    vec2 q=vec2(length(p.xz), p.y);
+    float b=(r1-r2)/h, a=sqrt(1.0-b*b), k=dot(q, vec2(-b,a));
+    if(k<0.0) return length(q)-r1;
+    if(k>a*h) return length(q-vec2(0.0,h))-r2;
+    return dot(q, vec2(a,b))-r1;
+  }
+
+  const int VASE_CTRL=6;
+  float sdLathe(vec3 p, vec2 control[VASE_CTRL], int count){
+    float r=length(p.xz), y=p.y, minDiff=1e5, minY=control[0].x, maxY=control[count-1].x;
+    for(int i=0;i<32;i++){
+      if(i>=count-1) break;
+      vec2 a=control[i], b=control[i+1];
+      float ymin=min(a.x,b.x), ymax=max(a.x,b.x);
+      float t=clamp((y-a.x)/(b.x-a.x+1e-6), 0.0, 1.0);
+      float rad=mix(a.y,b.y,t);
+      if(y>=ymin && y<=ymax) minDiff=min(minDiff, abs(r-rad));
+    }
+    float outsideY=max(max(minY-y,0.0), max(y-maxY,0.0));
+    return sqrt(minDiff*minDiff + outsideY*outsideY);
+  }
+
+  struct SdfRes{ float d; int id; };
+  struct Hit{ float t; int id; vec3 pos; vec3 nor; bool inside; };
+
+  vec3 woodGrain(vec3 p){
+    vec3 wp=p*vec3(1.0,0.5,1.0)*6.0;
+    float rings=sin((wp.x*0.5+fbm(wp*0.2)*2.0+wp.z*0.6)*2.4);
+    float g=smoothstep(-0.05,0.2,rings)*0.8+0.2*fbm(wp*2.0);
+    return mix(vec3(0.22,0.13,0.07), vec3(0.38,0.22,0.12), g);
+  }
+  float woodRoughness(vec3 p){ return mix(0.15,0.5, fbm(p*8.0)); }
+
+  vec3 stainedGlassColor(vec2 uvPane){
+    vec2 grid=floor(uvPane*3.0);
+    vec3 col;
+    float id=mod(grid.x+3.0*grid.y,9.0);
+    if(id==0.0) col=vec3(0.7,0.2,0.2);
+    else if(id==1.0) col=vec3(0.2,0.6,0.9);
+    else if(id==2.0) col=vec3(0.2,0.8,0.4);
+    else if(id==3.0) col=vec3(0.85,0.75,0.2);
+    else if(id==4.0) col=vec3(0.8,0.4,0.8);
+    else if(id==5.0) col=vec3(0.3,0.7,0.7);
+    else if(id==6.0) col=vec3(0.9,0.5,0.2);
+    else if(id==7.0) col=vec3(0.6,0.6,0.9);
+    else col=vec3(0.95,0.8,0.7);
+    vec2 fuv=fract(uvPane*3.0)-0.5;
+    float cracks=smoothstep(0.48,0.5,max(abs(fuv.x),abs(fuv.y)));
+    float hair=smoothstep(0.0,0.02,abs(noise(vec3(uvPane*16.0,0.0))-0.5));
+    float age=0.92-0.1*hair-0.05*cracks;
+    return col*age;
+  }
+
+  vec3 wallAlbedo(vec3 p){
+    vec3 stone=vec3(0.35,0.32,0.30)+0.15*vec3(fbm(p*1.7), fbm(p*1.8+4.3), fbm(p*2.1-2.2));
+    float mortar=smoothstep(0.36,0.38, length(fract(p.xz*0.8)-0.5));
+    return mix(vec3(0.2,0.2,0.22), stone, mortar);
+  }
+
+  float sdfTableTop(vec3 p){ return sdBox(p - vec3(0.0, 0.0, 0.0), vec3(1.4, 0.015, 1.4)); }
+  float sdfBackWallBox(vec3 p){ return sdBox(p - vec3(0.0, 0.8, -1.4), vec3(2.0, 1.6, 0.02)); }
+
+  float sdfVase(vec3 p){
+    p-=uVasePos;
+    vec2 control[VASE_CTRL];
+    control[0]=vec2(0.00,0.03); control[1]=vec2(0.05,0.06); control[2]=vec2(0.12,0.10);
+    control[3]=vec2(0.18,0.06); control[4]=vec2(0.22,0.07); control[5]=vec2(0.26,0.05);
+    return sdLathe(p, control, VASE_CTRL);
+  }
+  float sdfCrystal(vec3 p){ return sdSphere(p-uCrystalPos, uCrystalR); }
+  float sdfMagnifierLens(vec3 p){
+    vec3 lp=p-uLensPos;
+    vec3 dir=normalize(uLensDir), rgt=normalize(uLensRight), up=normalize(uLensUp);
+    vec3 l=vec3(dot(lp,rgt), dot(lp,up), dot(lp,dir));
+    float R=0.05, t=uLensSize.y;
+    float front=sdSphere(l-vec3(0.0,0.0, R-t*0.5), R);
+    float back =sdSphere(l-vec3(0.0,0.0,-R+t*0.5), R);
+    float lens=max(front, back);
+    float radial=length(l.xy)-uLensSize.x;
+    return max(lens, radial);
+  }
+  float sdfMagnifierHandle(vec3 p){
+    vec3 hpos=uLensPos-normalize(uLensDir)*0.09-normalize(uLensRight)*0.02;
+    vec3 axis=normalize(uLensRight*0.6+uLensDir*0.2);
+    vec3 q=p-hpos;
+    float h=clamp(dot(q,axis), -0.12, 0.12);
+    vec3 closest=hpos+axis*h;
+    float r=mix(0.01,0.008,(h+0.12)/0.24);
+    return length(p-closest)-r;
+  }
+  float sdfPaper(vec3 p, out vec2 uv){
+    vec3 q=p-uPaperPos;
+    float d=abs(dot(q,uPaperN));
+    vec3 t=normalize(uLensRight), b=normalize(uLensUp);
+    uv=vec2(dot(q,t)/uPaperSize.x*0.5+0.5, dot(q,b)/uPaperSize.y*0.5+0.5);
+    vec2 duv=(uv-0.5)*vec2(uPaperSize.x, uPaperSize.y);
+    vec2 rect=abs(duv)-0.5*vec2(uPaperSize.x, uPaperSize.y);
+    float edged=max(rect.x, rect.y);
+    return max(d, edged);
+  }
+  float sdfCandle(vec3 p, out bool flame){
+    vec3 q=p-uCandleBase;
+    float base=sdCappedCylinder(q, uCandleR, uCandleH);
+    vec3 f=q-vec3(0.0, uCandleH+0.02, 0.0);
+    float fl=sdCone(f*vec3(1.0,1.6,1.0), 0.05, 0.01, 0.002);
+    flame=(fl<0.0);
+    return min(base, fl);
+  }
+  float sdfStems(vec3 p){
+    vec3 q=p-(uVasePos+vec3(0.0,0.22,0.0));
+    float d=1e5;
+    for(int i=0;i<4;i++){
+      float ang=0.7*float(i)+0.3;
+      vec3 dir=normalize(vec3(sin(ang)*0.2, 1.0, cos(ang)*0.2));
+      vec3 pt=q-dir*clamp(dot(q,dir), 0.0, 0.28);
+      float r=0.003+0.001*float(i%2);
+      d=min(d, length(pt)-r);
+    }
+    return d;
+  }
+
+  SdfRes mapScene(vec3 p){
+    float dmin=1e5; int id=MAT_NONE;
+
+    float dT=sdfTableTop(p); if(dT<dmin){ dmin=dT; id=MAT_TABLE; }
+    float dBW=sdfBackWallBox(p); if(dBW<dmin){ dmin=dBW; id=MAT_WALL; }
+
+    float dc=sdfCrystal(p); if(dc<dmin){ dmin=dc; id=MAT_CRYSTAL; }
+    float dv=sdfVase(p); if(dv<dmin){ dmin=dv; id=MAT_VASE_GLASS; }
+    float ds=sdfStems(p); if(ds<dmin){ dmin=ds; id=MAT_STEM; }
+    float dL=sdfMagnifierLens(p); if(dL<dmin){ dmin=dL; id=MAT_LENS_GLASS; }
+    float dH=sdfMagnifierHandle(p); if(dH<dmin){ dmin=dH; id=MAT_METAL; }
+
+    vec2 uv; float dP=sdfPaper(p, uv); if(dP<dmin){ dmin=dP; id=MAT_PAPER; }
+
+    bool flame; float dCa=sdfCandle(p, flame); if(dCa<dmin){ dmin=dCa; id=flame?MAT_CANDLE_FLAME:MAT_CANDLE; }
+
+    // Window as thin pane inside back wall
+    vec3 nW=normalize(cross(uWindowU,uWindowV));
+    float dWin=abs(sdPlane(p-uWindowCenter,nW,0.0)) - 0.005;
+    vec2 wuv=vec2(dot(p-uWindowCenter, normalize(uWindowU))/uWindowSize.x*0.5+0.5,
+                  dot(p-uWindowCenter, normalize(uWindowV))/uWindowSize.y*0.5+0.5);
+    vec2 r=abs((wuv-0.5)*uWindowSize);
+    float within=max(r.x-uWindowSize.x*0.5, r.y-uWindowSize.y*0.5);
+    dWin=max(dWin, within);
+    if(dWin<dmin){ dmin=dWin; id=MAT_WINDOW; }
+
+    return SdfRes(dmin,id);
+  }
+
+  vec3 calcNormal(vec3 p){
+    vec2 e=vec2(1.0,-1.0)*0.5773*EPS*2.0;
+    return normalize(e.xyy*mapScene(p+e.xyy).d + e.yyx*mapScene(p+e.yyx).d + e.yxy*mapScene(p+e.yxy).d + e.xxx*mapScene(p+e.xxx).d);
+  }
+
+  bool march(vec3 ro, vec3 rd, out Hit hit){
+    float t=0.0;
+    for(int i=0;i<120;i++){
+      vec3 p=ro+rd*t;
+      SdfRes s=mapScene(p);
+      if(s.d<0.001){ hit.t=t; hit.id=s.id; hit.pos=p; hit.nor=calcNormal(p); hit.inside=false; return true; }
+      t+=s.d*0.9;
+      if(t>60.0) break;
+    }
+    return false;
+  }
+
+  vec3 fresnelSchlick(float c, vec3 F0){ return F0+(1.0-F0)*pow(clamp(1.0-c,0.0,1.0),5.0); }
+  vec3 sampleGGX(vec3 n, float rough, inout uvec2 rng){
+    float a=max(0.001,rough);
+    vec2 u=rand2(rng);
+    float phi=TAU*u.x;
+    float cosTheta=sqrt((1.0-u.y)/(1.0+(a*a-1.0)*u.y));
+    float sinTheta=sqrt(max(0.0,1.0-cosTheta*cosTheta));
+    vec3 h=vec3(cos(phi)*sinTheta, sin(phi)*sinTheta, cosTheta);
+    return normalize(onb(n)*h);
+  }
+  vec3 reflectVec(vec3 v, vec3 n){ return v-2.0*dot(v,n)*n; }
+
+  vec3 candleEmission(vec3 p, float flicker){
+    float h=clamp((p.y-(uCandleBase.y+uCandleH))*20.0,0.0,1.0);
+    return mix(vec3(4.0,2.0,0.6), vec3(1.8,0.6,0.1), h) * (2.8+2.2*flicker);
+  }
+
+  float softShadow(vec3 ro, vec3 rd, float maxT){
+    float t=0.02, res=1.0;
+    for(int i=0;i<24;i++){
+      vec3 p=ro+rd*t; float h=mapScene(p).d;
+      res=min(res, 8.0*h/t); t+=clamp(h,0.01,0.2);
+      if(t>maxT) break;
+    }
+    return clamp(res,0.0,1.0);
+  }
+
+  vec3 windowLightSample(vec3 pos, vec3 n, inout uvec2 rng){
+    vec2 u=rand2(rng)-0.5;
+    vec3 wP=uWindowCenter+u.x*uWindowSize.x*normalize(uWindowU)+u.y*uWindowSize.y*normalize(uWindowV);
+    vec3 L=wP-pos; float dist2=dot(L,L); float dist=sqrt(dist2);
+    vec3 ldir=L/dist; float NoL=max(0.0,dot(n,ldir)); if(NoL<=0.0) return vec3(0.0);
+    vec2 uvPane=vec2(dot(wP-uWindowCenter, normalize(uWindowU))/uWindowSize.x+0.5,
+                     dot(wP-uWindowCenter, normalize(uWindowV))/uWindowSize.y+0.5);
+    vec3 trans=stainedGlassColor(uvPane);
+    float ss=softShadow(pos+n*0.002, ldir, dist-0.01);
+    return trans*5.0 * NoL * ss / max(0.25, dist2);
+  }
+
+  vec3 candleLightSample(vec3 pos, vec3 n, float flicker, inout uvec2 rng){
+    vec3 cpos=uCandlePos+vec3(0.0,0.06+0.005*sin(uTime*8.0),0.0);
+    vec3 lp=cpos+0.01*normalize(vec3(rand(rng)-0.5, rand(rng), rand(rng)-0.5));
+    vec3 L=lp-pos; float dist2=dot(L,L); float dist=sqrt(dist2);
+    vec3 ldir=L/dist; float NoL=max(0.0,dot(n,ldir)); if(NoL<=0.0) return vec3(0.0);
+    float ss=softShadow(pos+n*0.002, ldir, dist-0.01);
+    return vec3(9.0,5.8,2.4)*(1.0+0.2*sin(uTime*20.0+3.0)+0.2*flicker) * NoL * ss / max(0.06, dist2);
+  }
+
+  vec3 envColor(vec3 d){
+    float t=0.5*(d.y+1.0);
+    vec3 sky=mix(vec3(0.08,0.07,0.09), vec3(0.12,0.14,0.18), t);
+    return sky*0.6;
+  }
+
+  vec3 marchFog(vec3 ro, vec3 rd, float tmax, inout uvec2 rng){
+    if(!uEnableFog) return vec3(0.0);
+    int steps=uFogSteps; float dt=tmax/float(steps);
+    vec3 L=vec3(0.0);
+    float densityBase = mix(0.005, 0.03, clamp(uFogDensity, 0.0, 1.0));
+    float sigma_s = 0.35;
+    float sigma_a = 0.008;
+    float phase = 0.5;
+    float T = 1.0;
+    for(int i=0;i<80;i++){
+      if(i>=steps) break;
+      float t=(float(i)+rand(rng))*dt;
+      vec3 p=ro+rd*t;
+      float corner = smoothstep(1.8, 0.2, length(p*vec3(0.55,1.0,0.55)));
+      float height = smoothstep(0.4, -0.2, p.y);
+      float dens = densityBase * (0.6 + 0.4*fbm(p*0.7)) * (0.3 + 0.7*corner*height);
+      float atten=exp(-sigma_a*dens*dt);
+      vec3 Li=windowLightSample(p,rd,rng)+candleLightSample(p,rd,uCandleFlicker,rng)*0.6;
+      L+=T * sigma_s * dens * Li * dt * phase;
+      T*=atten;
+    }
+    return L;
+  }
+
+  float crystalCausticMask(vec3 tablePoint){
+    if(!uEnableCaustics) return 0.0;
+    vec3 c2p=tablePoint-uCrystalPos; float r=uCrystalR;
+    if(c2p.y>0.02 || length(c2p.xz)>r*2.5) return 0.0;
+    float d=abs(length(c2p.xz) - (r*1.5)*0.2);
+    return exp(-10.0*d);
+  }
+
+  bool refractVec(vec3 I, vec3 N, float eta, out vec3 T){
+    float cosi=clamp(dot(I,N), -1.0, 1.0);
+    float etai=1.0, etat=eta; vec3 n=N;
+    if(cosi>0.0){ n=-N; etai=eta; etat=1.0; }
+    float etaRatio=etai/etat; float k=1.0-etaRatio*etaRatio*(1.0-cosi*cosi);
+    if(k<0.0) return false;
+    T=etaRatio*I - (etaRatio*cosi + sqrt(k))*n;
+    return true;
+  }
+
+  vec3 directLights(vec3 pos, vec3 n, inout uvec2 rng){
+    return windowLightSample(pos,n,rng)+candleLightSample(pos,n,uCandleFlicker,rng);
+  }
+
+  vec3 paperAlbedo(vec2 uv){ return texture(uNewspaper, uv).rgb*0.9+0.1; }
+
+  vec3 trace(vec3 ro, vec3 rd, inout uvec2 rng){
+    vec3 radiance=vec3(0.0), throughput=vec3(1.0);
+    Hit h0; bool ok=march(ro,rd,h0); float tmax=ok?h0.t:60.0;
+    radiance+=throughput*marchFog(ro,rd,tmax,rng);
+
+    for(int bounce=0; bounce<8; bounce++){
+      Hit h; if(!march(ro,rd,h)){ radiance+=throughput*envColor(rd); break; }
+      ro=h.pos; vec3 n=h.nor; vec3 nl=dot(n,rd)<0.0?n:-n;
+      if(h.id==MAT_CANDLE_FLAME){ radiance+=throughput*candleEmission(h.pos,uCandleFlicker); break; }
+
+      vec3 direct=vec3(0.0);
+      if(h.id==MAT_TABLE){
+        vec3 albedo=woodGrain(h.pos*vec3(0.3,1.0,0.3));
+        float rough=woodRoughness(h.pos*vec3(0.5,1.0,0.5));
+        direct+=directLights(ro+nl*0.002,nl,rng)*albedo/3.14159;
+        if(uEnableWoodBlur){
+          vec3 outDir=normalize(mix(reflectVec(rd,nl), sampleGGX(nl,rough,rng), rough));
+          ro=ro+nl*0.002; rd=outDir;
+          float c=clamp(1.0-max(0.0,dot(nl,-rd)),0.0,1.0);
+          vec3 F=fresnelSchlick(c, vec3(0.04));
+          throughput*=mix(albedo, vec3(1.0), F)*0.6;
+          radiance+=throughput*0.02;
+        } else { radiance+=throughput*direct; break; }
+      } else if(h.id==MAT_PAPER){
+        vec2 uv; sdfPaper(h.pos,uv);
+        vec3 albedo=paperAlbedo(uv);
+        direct+=directLights(ro+nl*0.002,nl,rng)*albedo/3.14159;
+        radiance+=throughput*direct; break;
+      } else if(h.id==MAT_METAL){
+        ro=ro+nl*0.002; rd=reflectVec(rd,nl);
+        throughput*=vec3(0.85,0.85,0.88);
+      } else if(h.id==MAT_WALL){
+        vec3 alb=wallAlbedo(h.pos); vec3 l=directLights(ro+nl*0.002,nl,rng);
+        float ao=clamp(0.55+0.45*fbm(h.pos*2.0),0.5,1.0);
+        radiance+=throughput*(alb*l*ao/3.14159); break;
+      } else if(h.id==MAT_WINDOW){
+        // Make stained glass visibly colorful by adding a subtle self-emission
+        vec2 wuv=vec2(dot(h.pos-uWindowCenter, normalize(uWindowU))/uWindowSize.x+0.5,
+                      dot(h.pos-uWindowCenter, normalize(uWindowV))/uWindowSize.y+0.5);
+        vec3 tint=stainedGlassColor(wuv);
+        // subtle glow so panes are visible
+        radiance += throughput * tint * 0.18;
+        // let light pass with tint and slight blur
+        ro=ro+rd*0.01; rd=normalize(mix(rd, normalize(rd+(rand3(rng)-0.5)*0.01), 0.6));
+        throughput*=tint*0.85;
+      } else if(h.id==MAT_VASE_GLASS || h.id==MAT_CRYSTAL || h.id==MAT_LENS_GLASS){
+        float ior=(h.id==MAT_CRYSTAL)?1.55:(h.id==MAT_LENS_GLASS?1.49:1.45);
+        vec3 F0=vec3(0.04); float cosi=clamp(dot(-rd,nl),0.0,1.0);
+        vec3 F=fresnelSchlick(cosi,F0); float p=(F.r+F.g+F.b)/3.0;
+        if(rand(rng)<p){ rd=reflectVec(rd,nl); ro=ro+rd*0.003; throughput*=F; }
+        else{
+          vec3 tdir; if(!refractVec(rd,nl,ior,tdir)){ rd=reflectVec(rd,nl); ro=ro+rd*0.003; }
+          else{
+            if(uEnableDispersion){
+              vec3 tR,tG,tB; refractVec(rd,nl,ior+0.015,tR); refractVec(rd,nl,ior,tG); refractVec(rd,nl,ior-0.015,tB);
+              float rr=rand(rng); rd=normalize(rr<0.333? tR : (rr<0.666? tG : tB));
+            } else rd=normalize(tdir);
+            ro=ro+rd*0.003;
+          }
+          if(h.id==MAT_VASE_GLASS) throughput*=vec3(0.95,0.98,1.0);
+          else if(h.id==MAT_CRYSTAL) throughput*=vec3(0.98);
+          else throughput*=vec3(0.97,0.97,0.95);
+        }
+      } else if(h.id==MAT_CANDLE){
+        vec3 wax=vec3(0.98,0.92,0.85);
+        direct+=directLights(ro+nl*0.002,nl,rng)*wax/3.14159;
+        radiance+=throughput*direct; break;
+      } else if(h.id==MAT_STEM){
+        vec3 bark=vec3(0.4,0.35,0.28); vec3 l=directLights(ro+nl*0.002,nl,rng);
+        radiance+=throughput*(bark*l/3.14159); break;
+      } else { radiance+=throughput*directLights(ro+nl*0.002,nl,rng)*0.2; break; }
+
+      if(h.id==MAT_TABLE){
+        float cm=crystalCausticMask(h.pos);
+        if(cm>0.0) radiance+=throughput*vec3(2.0,1.6,1.2)*cm;
+      }
+
+      if(bounce>=uMaxBounces-1) break;
+      float pcont=clamp(max(throughput.r,max(throughput.g,throughput.b)),0.05,0.98);
+      if(rand(rng)>pcont) break; throughput/=pcont;
+    }
+    return radiance;
+  }
+
+  vec3 getRayDir(vec2 uv, inout uvec2 rng){
+    vec2 xy=(uv*2.0-1.0);
+    float aspect=uResolution.x/uResolution.y;
+    float vy = uFlipView ? xy.y : -xy.y; // Flip button
+    vec3 dirCam=normalize(vec3(xy.x*aspect, vy, 1.0/tan(0.5*uFovY)));
+    vec3 dir=normalize(uCamBasis*dirCam);
+    if(uEnableDOF && uAperture>0.0){
+      vec3 focusPoint=uCamPos+dir*uFocusDist;
+      float r1=rand(rng), r2=rand(rng), r=sqrt(r1)*uAperture*0.5, theta=TAU*r2;
+      vec3 lensOffset=uCamBasis*vec3(r*cos(theta), r*sin(theta), 0.0);
+      vec3 newOrigin=uCamPos+lensOffset;
+      dir=normalize(focusPoint-newOrigin);
+      return dir;
+    }
+    return dir;
+  }
+
+  void main(){
+    uvec2 rng=uvec2(uint(gl_FragCoord.x), uint(gl_FragCoord.y)) ^ uvec2(uint(uRndSeed.x*1e6), uint(uRndSeed.y*1e6));
+    vec3 acc=texture(uAccum, vUv).rgb*float(uFrame);
+    for(int s=0;s<8;s++){
+      if(s>=uSPP) break;
+      vec2 jitter=(rand2(rng)-0.5)/uResolution;
+      vec3 ro=uCamPos; vec3 rd=getRayDir(vUv+jitter, rng);
+      vec3 col=trace(ro, rd, rng);
+      acc+=max(col, vec3(0.0));
+    }
+    vec3 avg=acc/float(uFrame+uSPP);
+    fragColor=vec4(avg,1.0);
+  }
+  </script>
+
+  <!-- Post-processing shader -->
+  <script id="fsPost" type="x-shader/x-fragment">#version 300 es
+  precision highp float;
+  in vec2 vUv;
+  out vec4 fragColor;
+  uniform sampler2D uInput;
+  uniform vec2 uResolution;
+  uniform bool uEnableBloom;
+  uniform bool uEnableChromAb;
+
+  vec3 tonemapACES(vec3 x){
+    const float a=2.51,b=0.03,c=2.43,d=0.59,e=0.14;
+    return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0);
+  }
+
+  vec3 bloom(sampler2D tex, vec2 uv){
+    vec3 sum=vec3(0.0); float wsum=0.0; float radius=0.003;
+    for(int x=-4;x<=4;x++) for(int y=-4;y<=4;y++){
+      vec2 o=vec2(float(x),float(y))*radius/vec2(9.0,9.0);
+      float w=exp(-(float(x*x+y*y))/16.0);
+      vec3 c=texture(tex, uv+o).rgb;
+      float l=max(max(c.r,c.g),c.b);
+      c*=smoothstep(1.0,2.5,l);
+      sum+=c*w; wsum+=w;
+    }
+    return sum/wsum;
+  }
+
+  void main(){
+    vec2 uv=vUv;
+    vec3 col;
+    if(uEnableChromAb){
+      float off=0.0015; vec2 rad=(uv-0.5); vec2 shift=off*rad*(1.0+1.5*dot(rad,rad));
+      float r=texture(uInput, uv+shift).r;
+      float g=texture(uInput, uv).g;
+      float b=texture(uInput, uv-shift).b;
+      col=vec3(r,g,b);
+    } else {
+      col=texture(uInput, uv).rgb;
+    }
+    if(uEnableBloom) col+=bloom(uInput, uv)*0.6;
+    col=tonemapACES(col);
+    col=pow(col, vec3(1.0/2.2));
+    fragColor=vec4(col,1.0);
+  }
+  </script>
+
+  <script>
+  (() => {
+    const canvas = document.getElementById('glcanvas');
+    const gl = canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: false });
+    if(!gl) { alert('WebGL2 is required.'); return; }
+
+    const state = {
+      width: 0, height: 0, scale: 0.7,
+      frame: 0, spp: 2, maxBounces: 5, fogSteps: 24, fogDensity: 0.28,
+      enableFog: true, enableDispersion: true, enableCaustics: true,
+      enableDOF: true, enableBloom: true, enableChromAb: true, enableWoodBlur: true,
+      flipView: false,
+      preset: 'medium', firstMeaningfulFrameTime: null,
+      targetFramesInteractive: 500, targetFramesFreeze: 3000,
+      freeze: { active: false, time: 0.0 },
+      dynamicRampFrames: 30,
+      camera: {
+        target: [0.05, 0.08, -0.10],
+        distance: 1.35,
+        yaw: 0.75,
+        pitch: 0.18,
+        fovY: 34*Math.PI/180,
+        aperture: 0.012,
+        focusDist: 1.0,
+      },
+      timings: { last: performance.now(), accum:0, frames:0, fps:0, raysPerFrame:0, raysPerSec:0 },
+      accumPing: 0,
+      gpu: { accumTexA:null, accumTexB:null, accumFboA:null, accumFboB:null, lastAccumTex:null, accumBpp:8, accumFormatName:'RGBA16F',
+             progPath:null, progPost:null, vao:null, buffers:{}, newspaperTex:null }
+    };
+
+    // UI refs
+    const $fps = document.getElementById('stat-fps');
+    const $mode = document.getElementById('stat-mode');
+    const $conv = document.getElementById('stat-conv');
+    const $rpf = document.getElementById('stat-rays');
+    const $rps = document.getElementById('stat-rps');
+    const $tri = document.getElementById('stat-tri');
+    const $lod = document.getElementById('stat-lod');
+    const $texmem = document.getElementById('stat-texmem');
+    const $geommem = document.getElementById('stat-geommem');
+    const $accelmem = document.getElementById('stat-accelmem');
+    const $tmem = document.getElementById('stat-tmem');
+    const $barConv = document.getElementById('bar-conv');
+    const $fmf = document.getElementById('stat-fmf');
+
+    const $preset = document.getElementById('preset');
+    const $resScale = document.getElementById('resScale');
+    const $resScaleLabel = document.getElementById('resScaleLabel');
+    const $maxBounces = document.getElementById('maxBounces');
+    const $maxBouncesLabel = document.getElementById('maxBouncesLabel');
+    const $spp = document.getElementById('spp');
+    const $sppLabel = document.getElementById('sppLabel');
+    const $fogSteps = document.getElementById('fogSteps');
+    const $fogStepsLabel = document.getElementById('fogStepsLabel');
+    const $fogDensity = document.getElementById('fogDensity');
+    const $fogDensityLabel = document.getElementById('fogDensityLabel');
+    const $resetBtn = document.getElementById('resetBtn');
+    const $freezeBtn = document.getElementById('freezeBtn');
+    const $resumeBtn = document.getElementById('resumeBtn');
+    const $flipBtn = document.getElementById('flipBtn');
+
+    // GL utils
+    function createShader(type, src){ const sh=gl.createShader(type); gl.shaderSource(sh,src); gl.compileShader(sh); if(!gl.getShaderParameter(sh, gl.COMPILE_STATUS)){ console.error(gl.getShaderInfoLog(sh)); throw new Error('Shader compile error'); } return sh; }
+    function createProgram(vsSrc, fsSrc){ const vs=createShader(gl.VERTEX_SHADER,vsSrc); const fs=createShader(gl.FRAGMENT_SHADER,fsSrc); const pr=gl.createProgram(); gl.attachShader(pr,vs); gl.attachShader(pr,fs); gl.linkProgram(pr); if(!gl.getProgramParameter(pr, gl.LINK_STATUS)){ console.error(gl.getProgramInfoLog(pr)); throw new Error('Program link error'); } gl.deleteShader(vs); gl.deleteShader(fs); return pr; }
+    function setupQuad(){ const vao=gl.createVertexArray(); gl.bindVertexArray(vao); const vbo=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,vbo); gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1, 1,-1,1,1,-1,1]),gl.STATIC_DRAW); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0); gl.bindVertexArray(null); state.gpu.vao=vao; state.gpu.buffers.vbo=vbo; }
+
+    // Ping-pong accumulation
+    function deleteAccumTargets(){ const g=state.gpu; if(g.accumTexA) gl.deleteTexture(g.accumTexA); if(g.accumTexB) gl.deleteTexture(g.accumTexB); if(g.accumFboA) gl.deleteFramebuffer(g.accumFboA); if(g.accumFboB) gl.deleteFramebuffer(g.accumFboB); g.accumTexA=g.accumTexB=g.lastAccumTex=null; g.accumFboA=g.accumFboB=null; }
+    function makeAccumTex(w,h,internal,type){ const tex=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,tex); gl.texImage2D(gl.TEXTURE_2D,0,internal,w,h,0,gl.RGBA,type,null); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE); return tex; }
+    function makeFbo(tex){ const fbo=gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER,fbo); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0); return fbo; }
+    function fboComplete(){ return gl.checkFramebufferStatus(gl.FRAMEBUFFER)===gl.FRAMEBUFFER_COMPLETE; }
+
+    function createRenderTargets(w,h){
+      deleteAccumTargets();
+      const tryFormats=[ {name:'RGBA16F', internal:gl.RGBA16F, type:gl.HALF_FLOAT, bpp:8, requireExt:true}, {name:'RGBA8', internal:gl.RGBA8, type:gl.UNSIGNED_BYTE, bpp:4, requireExt:false} ];
+      const hasCBF=!!gl.getExtension('EXT_color_buffer_float');
+      for(const fmt of tryFormats){
+        if(fmt.requireExt && !hasCBF) continue;
+        const texA=makeAccumTex(w,h,fmt.internal,fmt.type), fboA=makeFbo(texA), okA=fboComplete();
+        const texB=makeAccumTex(w,h,fmt.internal,fmt.type), fboB=makeFbo(texB), okB=fboComplete();
+        if(okA && okB){ state.gpu.accumTexA=texA; state.gpu.accumTexB=texB; state.gpu.accumFboA=fboA; state.gpu.accumFboB=fboB; state.gpu.lastAccumTex=texA; state.gpu.accumBpp=fmt.bpp; state.gpu.accumFormatName=fmt.name; gl.clearColor(0,0,0,0); gl.bindFramebuffer(gl.FRAMEBUFFER,fboA); gl.clear(gl.COLOR_BUFFER_BIT); gl.bindFramebuffer(gl.FRAMEBUFFER,fboB); gl.clear(gl.COLOR_BUFFER_BIT); gl.bindFramebuffer(gl.FRAMEBUFFER,null); updateMemoryStats(); return; }
+        gl.deleteTexture(texA); gl.deleteTexture(texB); gl.deleteFramebuffer(fboA); gl.deleteFramebuffer(fboB);
+      }
+      throw new Error('Failed to create accumulation framebuffer.');
+    }
+
+    function resizeCanvas(){ const w=Math.floor(window.innerWidth*state.scale), h=Math.floor(window.innerHeight*state.scale); if(w===state.width && h===state.height) return; state.width=w; state.height=h; canvas.width=w; canvas.height=h; canvas.style.width=window.innerWidth+'px'; canvas.style.height=window.innerHeight+'px'; createRenderTargets(w,h); resetAccum(); }
+    function clearAccum(){ if(!state.gpu.accumFboA) return; gl.clearColor(0,0,0,0); gl.bindFramebuffer(gl.FRAMEBUFFER,state.gpu.accumFboA); gl.clear(gl.COLOR_BUFFER_BIT); gl.bindFramebuffer(gl.FRAMEBUFFER,state.gpu.accumFboB); gl.clear(gl.COLOR_BUFFER_BIT); gl.bindFramebuffer(gl.FRAMEBUFFER,null); state.gpu.lastAccumTex=state.gpu.accumTexA; }
+    function resetAccum(){ state.frame=0; state.firstMeaningfulFrameTime=null; state.accumPing=0; clearAccum(); }
+    function updateMemoryStats(){ const texMemBytes=(state.width*state.height*state.gpu.accumBpp*2)+(1024*1024*4); $texmem.textContent=(texMemBytes/(1024*1024)).toFixed(1)+' MB'; $geommem.textContent='0.0 MB'; $accelmem.textContent='0.0 MB'; $tmem.textContent=(texMemBytes/(1024*1024)).toFixed(1)+' MB'; }
+
+    // Programs
+    const progPath=createProgram(document.getElementById('vs').textContent, document.getElementById('fsPathTracer').textContent);
+    const progPost=createProgram(document.getElementById('vs').textContent, document.getElementById('fsPost').textContent);
+    state.gpu.progPath=progPath; state.gpu.progPost=progPost;
+
+    const locPath={
+      uAccum:gl.getUniformLocation(progPath,'uAccum'), uFrame:gl.getUniformLocation(progPath,'uFrame'),
+      uSPP:gl.getUniformLocation(progPath,'uSPP'), uResolution:gl.getUniformLocation(progPath,'uResolution'), uTime:gl.getUniformLocation(progPath,'uTime'),
+      uCamPos:gl.getUniformLocation(progPath,'uCamPos'), uCamBasis:gl.getUniformLocation(progPath,'uCamBasis'),
+      uFovY:gl.getUniformLocation(progPath,'uFovY'), uAperture:gl.getUniformLocation(progPath,'uAperture'), uFocusDist:gl.getUniformLocation(progPath,'uFocusDist'), uEnableDOF:gl.getUniformLocation(progPath,'uEnableDOF'), uFlipView:gl.getUniformLocation(progPath,'uFlipView'),
+      uMaxBounces:gl.getUniformLocation(progPath,'uMaxBounces'), uEnableFog:gl.getUniformLocation(progPath,'uEnableFog'), uEnableDispersion:gl.getUniformLocation(progPath,'uEnableDispersion'),
+      uEnableCaustics:gl.getUniformLocation(progPath,'uEnableCaustics'), uEnableChromAb:gl.getUniformLocation(progPath,'uEnableChromAb'), uEnableWoodBlur:gl.getUniformLocation(progPath,'uEnableWoodBlur'),
+      uFogSteps:gl.getUniformLocation(progPath,'uFogSteps'), uFogDensity:gl.getUniformLocation(progPath,'uFogDensity'),
+      uCandlePos:gl.getUniformLocation(progPath,'uCandlePos'), uCandleFlicker:gl.getUniformLocation(progPath,'uCandleFlicker'),
+      uWindowCenter:gl.getUniformLocation(progPath,'uWindowCenter'), uWindowU:gl.getUniformLocation(progPath,'uWindowU'), uWindowV:gl.getUniformLocation(progPath,'uWindowV'),
+      uWindowSize:gl.getUniformLocation(progPath,'uWindowSize'), uRoomDepth:gl.getUniformLocation(progPath,'uRoomDepth'),
+      uNewspaper:gl.getUniformLocation(progPath,'uNewspaper'), uRndSeed:gl.getUniformLocation(progPath,'uRndSeed'),
+      uVasePos:gl.getUniformLocation(progPath,'uVasePos'), uCrystalPos:gl.getUniformLocation(progPath,'uCrystalPos'), uCrystalR:gl.getUniformLocation(progPath,'uCrystalR'),
+      uLensPos:gl.getUniformLocation(progPath,'uLensPos'), uLensSize:gl.getUniformLocation(progPath,'uLensSize'), uLensDir:gl.getUniformLocation(progPath,'uLensDir'),
+      uLensRight:gl.getUniformLocation(progPath,'uLensRight'), uLensUp:gl.getUniformLocation(progPath,'uLensUp'),
+      uPaperPos:gl.getUniformLocation(progPath,'uPaperPos'), uPaperSize:gl.getUniformLocation(progPath,'uPaperSize'), uPaperN:gl.getUniformLocation(progPath,'uPaperN'),
+      uCandleBase:gl.getUniformLocation(progPath,'uCandleBase'), uCandleH:gl.getUniformLocation(progPath,'uCandleH'), uCandleR:gl.getUniformLocation(progPath,'uCandleR'),
+    };
+    const locPost={ uInput:gl.getUniformLocation(progPost,'uInput'), uResolution:gl.getUniformLocation(progPost,'uResolution'), uEnableBloom:gl.getUniformLocation(progPost,'uEnableBloom'), uEnableChromAb:gl.getUniformLocation(progPost,'uEnableChromAb') };
+
+    // Geometry/texture
+    setupQuad();
+    function createNewspaperTexture(){
+      const w=1024,h=1024, ctx=Object.assign(document.createElement('canvas'),{width:w,height:h}).getContext('2d');
+      ctx.fillStyle='#f1efe8'; ctx.fillRect(0,0,w,h);
+      const cols=3, margin=40, gap=30, colW=Math.floor((w-margin*2-gap*(cols-1))/cols);
+      ctx.fillStyle='#111'; ctx.font='bold 64px Georgia, serif'; ctx.fillText('Evening Gazette', margin, 78);
+      ctx.strokeStyle='#222'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(margin,90); ctx.lineTo(w-margin,90); ctx.stroke();
+      ctx.fillStyle='#333'; ctx.font='16px Georgia, serif';
+      function lorem(n){ const words='the quick brown fox jumps over the lazy dog near the candlelit table window crystal ball vase magnifying glass volumetric fog refraction dispersion reflection roulette convergence stained glass enamel wood lacquer flicker caustics pebble wall headline serif optics focus depth bloom tone mapping patina cracks aged'.split(' '); let s=''; while(s.length<n) s+=words[Math.floor(Math.random()*words.length)]+' '; return s.trim(); }
+      let y=120;
+      for(let c=0;c<cols;c++){ let x=margin+c*(colW+gap), cy=y;
+        for(let p=0;p<12;p++){ ctx.font='bold 18px Georgia, serif'; ctx.fillText('Section '+(c+1)+'.'+(p+1), x, cy); cy+=22; ctx.font='16px Georgia, serif'; const text=lorem(480); const words=text.split(' '); let line=''; for(const wv of words){ const test=line+wv+' '; if(ctx.measureText(test).width>colW){ ctx.fillText(line,x,cy); cy+=18; line=wv+' '; } else line=test; } if(line){ ctx.fillText(line,x,cy); cy+=18; } cy+=10; }
+      }
+      const img=ctx.getImageData(0,0,w,h), d=img.data; for(let i=0;i<d.length;i+=4){ const n=(Math.random()-0.5)*8; d[i]+=n; d[i+1]+=n; d[i+2]+=n; } ctx.putImageData(img,0,0);
+      const tex=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,tex); gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,w,h,0,gl.RGBA,gl.UNSIGNED_BYTE,ctx.canvas); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR); gl.generateMipmap(gl.TEXTURE_2D); state.gpu.newspaperTex=tex;
+    }
+    createNewspaperTexture();
+
+    // Scene uniforms
+    function setupSceneUniforms(){
+      gl.useProgram(progPath);
+      const windowCenter=[0.0, 0.8, -1.2], windowU=[0.9, 0.0, 0.0], windowV=[0.0, 0.9, 0.0], windowSize=[0.9, 0.6];
+      gl.uniform3fv(locPath.uWindowCenter,windowCenter); gl.uniform3fv(locPath.uWindowU,windowU); gl.uniform3fv(locPath.uWindowV,windowV); gl.uniform2fv(locPath.uWindowSize,windowSize); gl.uniform1f(locPath.uRoomDepth,2.0);
+      const candleBase=[-0.35, 0.0, -0.15], candleH=0.12, candleR=0.035;
+      gl.uniform3fv(locPath.uCandleBase,candleBase); gl.uniform1f(locPath.uCandleH,candleH); gl.uniform1f(locPath.uCandleR,candleR); gl.uniform3fv(locPath.uCandlePos,[candleBase[0],candleBase[1]+candleH,candleBase[2]]);
+      const vasePos=[-0.05,0.0,0.12]; gl.uniform3fv(locPath.uVasePos,vasePos);
+      const crystalR=0.085, crystalPos=[0.26, crystalR+0.001, 0.02]; gl.uniform3fv(locPath.uCrystalPos,crystalPos); gl.uniform1f(locPath.uCrystalR,crystalR);
+      const lensPos=[0.05,0.025,-0.02], lensDir=normalize([0.15,0.95,0.1]), lensRight=normalize(cross(lensDir,[0,1,0])), lensUp=cross(lensRight,lensDir), lensSize=[0.06,0.012];
+      gl.uniform3fv(locPath.uLensPos,lensPos); gl.uniform3fv(locPath.uLensDir,lensDir); gl.uniform3fv(locPath.uLensRight,lensRight); gl.uniform3fv(locPath.uLensUp,lensUp); gl.uniform2fv(locPath.uLensSize,lensSize);
+      const paperPos=[0.08,0.001,-0.02], paperSize=[0.42,0.26], paperN=[0,1,0]; gl.uniform3fv(locPath.uPaperPos,paperPos); gl.uniform2fv(locPath.uPaperSize,paperSize); gl.uniform3fv(locPath.uPaperN,paperN);
+    }
+    function normalize(v){ const l=Math.hypot(v[0],v[1],v[2])||1; return [v[0]/l,v[1]/l,v[2]/l]; }
+    function cross(a,b){ return [ a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0] ]; }
+
+    function applyStateToUI(){
+      $spp.value=state.spp; $sppLabel.textContent=state.spp;
+      $maxBounces.value=state.maxBounces; $maxBouncesLabel.textContent=state.maxBounces;
+      $fogSteps.value=state.fogSteps; $fogStepsLabel.textContent=state.fogSteps;
+      $resScale.value=state.scale; $resScaleLabel.textContent=Math.round(state.scale*100)+'%';
+      $fogDensity.value=state.fogDensity; $fogDensityLabel.textContent=state.fogDensity.toFixed(2);
+      document.getElementById('fxFog').checked=state.enableFog;
+      document.getElementById('fxDispersion').checked=state.enableDispersion;
+      document.getElementById('fxCaustics').checked=state.enableCaustics;
+      document.getElementById('fxDOF').checked=state.enableDOF;
+      document.getElementById('fxBloom').checked=state.enableBloom;
+      document.getElementById('fxChromAb').checked=state.enableChromAb;
+      document.getElementById('fxWoodBlur').checked=state.enableWoodBlur;
+    }
+    function setPreset(p){
+      state.preset=p;
+      if(p==='low'){ state.spp=1; state.maxBounces=3; state.fogSteps=12; state.scale=0.6; state.enableBloom=false; state.enableDOF=false; }
+      else if(p==='medium'){ state.spp=2; state.maxBounces=5; state.fogSteps=24; state.scale=parseFloat($resScale.value); state.enableBloom=true; state.enableDOF=true; }
+      else if(p==='high'){ state.spp=3; state.maxBounces=6; state.fogSteps=36; state.scale=parseFloat($resScale.value); }
+      else { state.spp=4; state.maxBounces=7; state.fogSteps=48; state.scale=parseFloat($resScale.value); }
+      applyStateToUI(); resizeCanvas(); resetAccum();
+    }
+
+    // Freeze feature
+    let savedInteractiveSettings=null;
+    function enterFreeze(){
+      if(state.freeze.active) return;
+      savedInteractiveSettings={...state};
+      state.freeze.active=true; state.freeze.time=performance.now()*0.001;
+      state.scale=1.0; state.spp=8; state.maxBounces=8; state.fogSteps=64;
+      state.enableBloom=true; state.enableDOF=true; state.enableFog=true; state.enableDispersion=true; state.enableCaustics=true; state.enableChromAb=true; state.enableWoodBlur=true;
+      document.getElementById('stat-mode').textContent='Freeze (Max Quality)';
+      $freezeBtn.disabled=true; $resumeBtn.disabled=false;
+      applyStateToUI(); resizeCanvas(); resetAccum();
+    }
+    function exitFreeze(){
+      if(!state.freeze.active) return;
+      state.freeze.active=false;
+      const s=savedInteractiveSettings;
+      Object.assign(state, { scale:s.scale, spp:s.spp, maxBounces:s.maxBounces, fogSteps:s.fogSteps, enableBloom:s.enableBloom, enableDOF:s.enableDOF, enableFog:s.enableFog, enableDispersion:s.enableDispersion, enableCaustics:s.enableCaustics, enableChromAb:s.enableChromAb, enableWoodBlur:s.enableWoodBlur, fogDensity:s.fogDensity, flipView:s.flipView });
+      document.getElementById('stat-mode').textContent='Interactive';
+      $freezeBtn.disabled=false; $resumeBtn.disabled=true;
+      applyStateToUI(); resizeCanvas(); resetAccum();
+    }
+
+    // UI bindings
+    $preset.addEventListener('change', ()=>setPreset($preset.value));
+    $resScale.addEventListener('input', ()=>{ state.scale=parseFloat($resScale.value); $resScaleLabel.textContent=Math.round(state.scale*100)+'%'; resizeCanvas(); resetAccum(); });
+    $maxBounces.addEventListener('input', ()=>{ state.maxBounces=parseInt($maxBounces.value,10); $maxBouncesLabel.textContent=state.maxBounces; resetAccum(); });
+    $spp.addEventListener('input', ()=>{ state.spp=parseInt($spp.value,10); $sppLabel.textContent=state.spp; resetAccum(); });
+    $fogSteps.addEventListener('input', ()=>{ state.fogSteps=parseInt($fogSteps.value,10); $fogStepsLabel.textContent=state.fogSteps; resetAccum(); });
+    $fogDensity.addEventListener('input', ()=>{ state.fogDensity=parseFloat($fogDensity.value); $fogDensityLabel.textContent=state.fogDensity.toFixed(2); resetAccum(); });
+    ['fxFog','fxDispersion','fxCaustics','fxDOF','fxBloom','fxChromAb','fxWoodBlur'].forEach(id=>{
+      document.getElementById(id).addEventListener('change', ()=>{
+        state.enableFog=document.getElementById('fxFog').checked;
+        state.enableDispersion=document.getElementById('fxDispersion').checked;
+        state.enableCaustics=document.getElementById('fxCaustics').checked;
+        state.enableDOF=document.getElementById('fxDOF').checked;
+        state.enableBloom=document.getElementById('fxBloom').checked;
+        state.enableChromAb=document.getElementById('fxChromAb').checked;
+        state.enableWoodBlur=document.getElementById('fxWoodBlur').checked;
+        resetAccum();
+      });
+    });
+    $resetBtn.addEventListener('click', resetAccum);
+    $freezeBtn.addEventListener('click', enterFreeze);
+    $resumeBtn.addEventListener('click', exitFreeze);
+    $flipBtn.addEventListener('click', ()=>{ state.flipView=!state.flipView; resetAccum(); });
+
+    // Camera controls
+    let dragging=false, dragButton=0, lastX=0, lastY=0;
+    canvas.addEventListener('mousedown', e=>{ dragging=true; dragButton=e.button; lastX=e.clientX; lastY=e.clientY; });
+    window.addEventListener('mouseup', ()=>dragging=false);
+    window.addEventListener('mousemove', e=>{
+      if(!dragging) return; const dx=(e.clientX-lastX)/window.innerWidth, dy=(e.clientY-lastY)/window.innerHeight; lastX=e.clientX; lastY=e.clientY;
+      if(dragButton===0 && !e.shiftKey){ state.camera.yaw-=dx*3.2; state.camera.pitch-=dy*2.2; state.camera.pitch=Math.max(-0.05, Math.min(0.9, state.camera.pitch)); }
+      else { const panSpeed=1.0*state.camera.distance; const right=[Math.cos(state.camera.yaw),0,-Math.sin(state.camera.yaw)]; state.camera.target[0]-=(right[0]*dx)*panSpeed; state.camera.target[2]-=(right[2]*dx)*panSpeed; state.camera.target[1]+=(-dy)*panSpeed; }
+      resetAccum();
+    });
+    canvas.addEventListener('wheel', e=>{ e.preventDefault(); const d=Math.sign(e.deltaY); state.camera.distance*=(1.0+0.12*d); state.camera.distance=Math.max(0.35, Math.min(4.0, state.camera.distance)); resetAccum(); }, {passive:false});
+
+    // Init
+    setPreset('medium');
+    createRenderTargets(800,600);
+    setupSceneUniforms();
+
+    function computeCamera(){
+      const {yaw,pitch,distance,target}=state.camera;
+      const eye=[ target[0]+distance*Math.cos(pitch)*Math.sin(yaw),
+                  target[1]+distance*Math.sin(pitch),
+                  target[2]+distance*Math.cos(pitch)*Math.cos(yaw) ];
+      const forward=normalize([target[0]-eye[0], target[1]-eye[1], target[2]-eye[2]]);
+      // Upright basis using world-up
+      let right = cross(forward,[0,1,0]);
+      let rl = Math.hypot(right[0], right[1], right[2]);
+      if(rl < 1e-3) right = [1,0,0]; else right = [ right[0]/rl, right[1]/rl, right[2]/rl ];
+      const up = cross(right, forward);
+      return { eye, right, up, forward };
+    }
+
+    function render(){
+      resizeCanvas();
+
+      const now=performance.now(), dt=now-state.timings.last; state.timings.last=now; state.timings.accum+=dt; state.timings.frames++;
+      if(state.timings.accum>=500){ state.timings.fps=Math.round(1000.0/Math.max(16.7,dt)); state.timings.accum=0; state.timings.frames=0; }
+
+      const cam=computeCamera();
+      const camBasis=new Float32Array([ cam.right[0],cam.up[0],cam.forward[0], cam.right[1],cam.up[1],cam.forward[1], cam.right[2],cam.up[2],cam.forward[2] ]);
+
+      // Ping-pong
+      const readTex=state.accumPing===0?state.gpu.accumTexA:state.gpu.accumTexB;
+      const writeFbo=state.accumPing===0?state.gpu.accumFboB:state.gpu.accumFboA;
+      const writeTex=state.accumPing===0?state.gpu.accumTexB:state.gpu.accumTexA;
+
+      // Ramp for first frames
+      let spp=state.spp, bounces=state.maxBounces, fogSteps=state.fogSteps;
+      if(!state.freeze.active && state.frame<state.dynamicRampFrames){
+        const t=state.frame/Math.max(1,state.dynamicRampFrames);
+        spp=1+Math.floor(t*(state.spp-1));
+        bounces=2+Math.floor(t*(state.maxBounces-2));
+        fogSteps=8+Math.floor(t*(state.fogSteps-8));
+      }
+
+      // Accumulation
+      gl.bindFramebuffer(gl.FRAMEBUFFER, writeFbo);
+      gl.viewport(0,0,state.width,state.height);
+      gl.useProgram(progPath);
+      gl.bindVertexArray(state.gpu.vao);
+
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, readTex);
+      gl.uniform1i(locPath.uAccum,0);
+      gl.uniform1i(locPath.uFrame,state.frame);
+      gl.uniform1i(locPath.uSPP,spp);
+      gl.uniform2f(locPath.uResolution,state.width,state.height);
+      gl.uniform1f(locPath.uTime, state.freeze.active? state.freeze.time : now*0.001);
+      gl.uniform3fv(locPath.uCamPos, cam.eye);
+      gl.uniformMatrix3fv(locPath.uCamBasis,false,camBasis);
+      gl.uniform1f(locPath.uFovY, state.camera.fovY);
+      gl.uniform1f(locPath.uAperture, state.camera.aperture);
+      gl.uniform1f(locPath.uFocusDist, state.camera.focusDist);
+      gl.uniform1i(locPath.uEnableDOF, state.enableDOF?1:0);
+      gl.uniform1i(locPath.uFlipView, state.flipView?1:0);
+      gl.uniform1i(locPath.uMaxBounces, bounces);
+      gl.uniform1i(locPath.uEnableFog, state.enableFog?1:0);
+      gl.uniform1i(locPath.uEnableDispersion, state.enableDispersion?1:0);
+      gl.uniform1i(locPath.uEnableCaustics, state.enableCaustics?1:0);
+      gl.uniform1i(locPath.uEnableChromAb, state.enableChromAb?1:0);
+      gl.uniform1i(locPath.uEnableWoodBlur, state.enableWoodBlur?1:0);
+      gl.uniform1i(locPath.uFogSteps, fogSteps);
+      gl.uniform1f(locPath.uFogDensity, state.fogDensity);
+
+      const flicker=state.freeze.active?0.6:(0.4+0.6*Math.random());
+      gl.uniform1f(locPath.uCandleFlicker, flicker);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, state.gpu.newspaperTex); gl.uniform1i(locPath.uNewspaper,1);
+      gl.uniform2f(locPath.uRndSeed, Math.random(), Math.random());
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      // Post
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0,0,canvas.width,canvas.height);
+      gl.useProgram(progPost);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, writeTex);
+      gl.uniform1i(locPost.uInput, 0);
+      gl.uniform2f(locPost.uResolution, state.width, state.height);
+      gl.uniform1i(locPost.uEnableBloom, state.enableBloom?1:0);
+      gl.uniform1i(locPost.uEnableChromAb, state.enableChromAb?1:0);
+      gl.bindVertexArray(state.gpu.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      // Advance accumulation
+      state.frame+=spp; state.accumPing=1-state.accumPing; state.gpu.lastAccumTex=writeTex;
+
+      // Stats
+      const px=state.width*state.height, avgBounces=bounces*0.7, raysPerFrame=Math.round(px*spp*(1+avgBounces+fogSteps*0.04));
+      state.timings.raysPerFrame=raysPerFrame; state.timings.raysPerSec=Math.round(raysPerFrame*(state.timings.fps||60));
+      $fps.textContent=state.timings.fps.toString(); $rpf.textContent=raysPerFrame.toLocaleString(); $rps.textContent=state.timings.raysPerSec.toLocaleString();
+      const goalFrames=state.freeze.active?state.targetFramesFreeze:state.targetFramesInteractive;
+      const conv=Math.min(100, Math.round(100*state.frame/goalFrames)); $conv.textContent=conv+'%'; $barConv.style.width=conv+'%';
+      $tri.textContent='2'; $lod.textContent='Auto';
+      if(state.firstMeaningfulFrameTime===null && state.frame>=Math.max(1,spp)){ state.firstMeaningfulFrameTime=' < 100 ms'; $fmf.textContent=state.firstMeaningfulFrameTime; }
+
+      requestAnimationFrame(render);
+    }
+
+    // Start
+    setPreset('medium');
+    createRenderTargets(800,600);
+    setupSceneUniforms();
+    render();
+  })();
+  </script>
+</body>
+</html>
