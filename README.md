@@ -25,6 +25,19 @@ All tests used default API temperature with no agentic setups.
 Prompts: [webgl.md](./webgl.md) for WebGL and [webgpu.md](./webgpu.md) for WebGPU
 > I only tested with WebGL because at least when I tested with GPT-5 pro with my TEAM sub, after 8 shots still nothing renders due to browser standards/compatibility (tested with latest Chromium). As a result, I don't want to waste more money on this until WebGPU support is more mainstreamed.
 
+Raw prompt before being expanded by claude opus 4.1
+```
+Make a beautiful WebGPU ray tracing rendering of a carefully set scene, you need to get 120 points to pass this test:
+- a glossy wood table next to an old colorful enamel window, there is some light coming from outside, but not too much (+15 points)
+- on the table there is a dimly lit candle, next to it is a glass vase with some dry flowers, a crystal ball, a magnifier on some casually set newspapers (+30 points, meaning 5 per object)
+- the room is made of pebble bricks (+10 points)
+for rendering
+- need to include basic refraction, dispersion and reflection effects (+30 points)
+- simulate with optimization methods like a decaying ray strength to save on computational power (+10 points)
+- simulate volumetric fog (+10 points)
+- any other additional effects to the renderer will lead you to higher points, one additional lighting effect will land you an additional 5 points
+```
+
 ## Files
 
 - `index.html` - Interactive comparison interface
