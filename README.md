@@ -1,8 +1,10 @@
 # WebGL Raytracing LLM Comparison
 
 A simple comparison of GPT-5, Claude Opus 4.1, and Gemini 2.5 Pro on a complex WebGL raytracing challenge.
+
 Demo site [https://benhaotang.github.io/raytracing-llm-bench/](https://benhaotang.github.io/raytracing-llm-bench/)
-The homepage and this README is mainly written by claude code, the scoring and description.md is written by a biased human like me.
+
+The homepage and this README is mainly written by claude code, the scoring and description.md is written by a **biased human** like me.
 
 ## Results
 
